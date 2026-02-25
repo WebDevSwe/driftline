@@ -1,0 +1,17 @@
+[project]
+name = "driftline"
+version = "0.1.0"
+description = "A small simulation of a society's economy"
+requires-python = ">=3.12"
+dependencies = [
+    "customtkinter>=5.2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
