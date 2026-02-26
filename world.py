@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from models import Building, FoodStore, Human, Workplace, WorldConfig
+from models import Building, Human, Workplace, WorldConfig
 
 SIZE_MAP = {
     "Liten": 30,
@@ -13,13 +13,64 @@ SIZE_MAP = {
 REGIONS = ["Norra", "Medel", "Syd"]
 SEASONS = ["Vinter", "Vår", "Sommar", "Höst"]
 
+BLOCK_COST_MIN = 1
+FOOD_MAX = 100
+FOOD_BUY_THRESHOLD = 30
+FOOD_MONTHLY_NEED = 2
+FOOD_FARM_PER_EMPLOYEE_MONTH = 16
+
+WORKPLACE_RULES = {
+    "Jordbruk": {
+        "blocks": 4,
+        "block_cost_multiplier": 0,
+        "capacity_min": 1,
+        "capacity_max": 10,
+        "wage": 4,
+        "strain": 1,
+        "status_req": 0,
+        "color": "#6ed26a",
+    },
+    "Basjobb": {
+        "blocks_min": 1,
+        "blocks_max": 2,
+        "block_cost_multiplier": 2,
+        "capacity_min": 1,
+        "capacity_max": 20,
+        "wage": 6,
+        "strain": 1,
+        "status_req": 1,
+        "color": "#7cc4ff",
+    },
+    "Service": {
+        "blocks_min": 2,
+        "blocks_max": 6,
+        "block_cost_multiplier": 10,
+        "capacity_min": 1,
+        "capacity_max": 100,
+        "wage": 7,
+        "strain": 2,
+        "status_req": 2,
+        "color": "#ffd166",
+    },
+    "Industri": {
+        "blocks_choices": [4, 6, 8, 16],
+        "block_cost_multiplier": 100,
+        "capacity_min": 100,
+        "capacity_max": 10000,
+        "wage": 9,
+        "strain": 3,
+        "status_req": 10,
+        "color": "#f0b34f",
+    },
+}
+
 class World:
     def __init__(self, config: WorldConfig):
         self.name = config.name
         self.size_label = config.size_label
         self.region = config.region
         self.grid_size = SIZE_MAP[config.size_label]
-        self.buildings = []
+        self.buildings: list[Building] = []
         self.money = 120
         self.population = 10
         self.stability = 78
@@ -55,30 +106,6 @@ class World:
             "A-kassa": 3,
         }
         self.healthcare_extra_per_sick = 2
-        self.housing_units = {
-            "Tält": 10,
-            "Hydda": 4,
-            "Lägenhet": 2,
-            "Villa": 0,
-        }
-        self.housing_capacity = {
-            "Tält": 1,
-            "Hydda": 2,
-            "Lägenhet": 4,
-            "Villa": 5,
-        }
-        self.housing_cost = {
-            "Tält": 0,
-            "Hydda": 3,
-            "Lägenhet": 6,
-            "Villa": 9,
-        }
-        self.housing_allowed_seasons = {
-            "Tält": {"Vår", "Sommar", "Höst"},
-            "Hydda": set(SEASONS),
-            "Lägenhet": set(SEASONS),
-            "Villa": set(SEASONS),
-        }
         self.region_profile = {
             "Norra": {
                 "season_multiplier": {
@@ -110,19 +137,13 @@ class World:
         }
         self.month = 0
         self.unemployed = 6
-        self.jobs = {
-            "Basjobb": 8,
-            "Service": 4,
-            "Industri": 2,
-        }
-        self.has_megafactory = False
-        self.immigration_buffer = 0
+        self.block_cost = 1
+        self.block_restore_cost = 100
+        self.food_price = 2
         self.next_human_id = 1
         self.next_workplace_id = 1
-        self.next_store_id = 1
         self.humans: list[Human] = []
         self.workplaces: list[Workplace] = []
-        self.food_stores: list[FoodStore] = []
         self.history = {
             "population": [],
             "money": [],
@@ -144,16 +165,17 @@ class World:
             "Säsong": 0,
         }
         self.last_hungry = 0
-        self.last_homeless = 0
-        self.last_unpaid_rent = 0
         self.last_sick = 0
+        self.last_unemployed = 0
+        self.last_food_supply = 0
+        self.last_food_sold = 0
+        self.last_bank_rate = 0.01
         self.year_revenue = 0
         self.year_expenses = 0
         self.last_year_revenue = 0
         self.last_year_expenses = 0
         self._seed_world()
         self._seed_population()
-        self._seed_economy_buildings()
         self._record_history()
 
     def _seed_world(self):
@@ -164,41 +186,11 @@ class World:
         for dx in range(size):
             for dy in range(size):
                 self.buildings.append(Building(start + dx, start + dy, "#d9534f", "Torg"))
-        self._seed_zone(
-            x_start=2,
-            x_end=center - 6,
-            y_start=center + 6,
-            y_end=self.grid_size - 3,
-            density=0.08,
-            color="#4aa3ff",
-            kind="Bostad",
-        )
-        self._seed_zone(
-            x_start=center + 6,
-            x_end=self.grid_size - 3,
-            y_start=2,
-            y_end=center - 6,
-            density=0.1,
-            color="#f0b34f",
-            kind="Industri",
-        )
-
-    def _seed_zone(self, x_start, x_end, y_start, y_end, density, color, kind):
-        for x in range(x_start, x_end):
-            for y in range(y_start, y_end):
-                if random.random() < density:
-                    self.buildings.append(Building(x, y, color, kind))
 
     def _seed_population(self):
         for _ in range(self.population):
-            self.humans.append(Human(id=self.next_human_id, money=10))
+            self.humans.append(Human(id=self.next_human_id, money=10, food=40))
             self.next_human_id += 1
-
-    def _seed_economy_buildings(self):
-        self._add_workplace(kind="Basjobb", wage=6, capacity=6, strain=1)
-        self._add_workplace(kind="Service", wage=7, capacity=4, strain=2)
-        self._add_workplace(kind="Industri", wage=9, capacity=3, strain=3)
-        self._add_food_store(kind="Mataffär", price=2, capacity=8)
 
     def advance_month(self):
         self.month += 1
@@ -228,13 +220,16 @@ class World:
 
     def _apply_economy(self):
         self._sync_population()
-        self._update_jobs()
-        self._apply_jobs()
-        self._apply_wages()
+        self._maybe_upgrade_housing()
+        self._sync_tents()
+        self._spawn_new_businesses()
+        self._assign_jobs_and_pay_wages()
+        self._expand_workplaces()
         hungry = self._apply_food()
         self._update_building_activity()
-        homeless, unpaid_rent = self._apply_housing()
-        sick = self._update_health(hungry, homeless, unpaid_rent)
+        sick = self._update_health(hungry)
+        self._apply_status_purchases()
+        self._apply_bank_interest_and_loans()
 
         season = self.season()
         service_cost = self._calc_service_cost(sick)
@@ -243,14 +238,12 @@ class World:
         net = self._apply_budget(revenue, total_expenses, base_expenses, service_cost, seasonal_expenses, tax_month)
 
         self.last_hungry = hungry
-        self.last_homeless = homeless
-        self.last_unpaid_rent = unpaid_rent
         self.last_sick = sick
+        self.last_unemployed = self.unemployed
 
-        self._update_stability(season, net, hungry, homeless, unpaid_rent, sick, tax_month)
-        self._update_population(season, net, hungry, homeless, unpaid_rent)
-        self._update_buildings()
-        self._sync_workforce()
+        self._update_stability(season, net, hungry, sick)
+        self._update_population(season, net, hungry)
+        self._cleanup_abandoned_workplaces()
 
     def _calc_service_cost(self, sick):
         active_service_cost = sum(
@@ -304,7 +297,7 @@ class World:
             self.year_expenses = 0
         return net
 
-    def _update_stability(self, season, net, hungry, homeless, unpaid_rent, sick, tax_month):
+    def _update_stability(self, season, net, hungry, sick):
         profile = self.region_profile.get(self.region, self.region_profile["Medel"])
         stability_drift = 0
         if self.region == "Norra" and season == "Vinter":
@@ -325,192 +318,489 @@ class World:
             stability_drift += 1
         if self.service_funding.get("Brandkår", 0) >= 60:
             stability_drift += 1
-        if net < 0 and tax_month:
+        if net < 0 and (self.month % 12 == 0):
             stability_drift -= 1
-        if not self._has_winter_safe_housing() and season == "Vinter":
-            stability_drift -= 6
         if self.unemployed > max(2, self.population // 3):
             stability_drift -= 2
         if hungry > 0:
             stability_drift -= min(5, hungry)
-        if homeless > 0:
-            stability_drift -= min(6, homeless)
-        if unpaid_rent > 0:
-            stability_drift -= min(4, unpaid_rent // 2)
         if sick > 0:
             stability_drift -= min(4, sick // 3)
         if self.stability >= 70 and net >= 0:
             stability_drift += 1
         self.stability = max(0, min(100, self.stability + stability_drift))
 
-    def _update_population(self, season, net, hungry, homeless, unpaid_rent):
+    def _update_population(self, season, net, hungry):
         pop_change = 0
         if self.stability >= 70 and net >= 0:
             pop_change += 1
-        if self.money >= 20 and self._has_housing_capacity(season):
+        if self.money >= 20:
             pop_change += 1
-        if self.stability >= 55 and self._has_housing_capacity(season):
+        if self.stability >= 55:
             pop_change += 1
         if self.stability <= 35 or self.money == 0:
             pop_change -= 1
         if self.stability <= 25:
             pop_change -= 1
-        if not self._has_housing_capacity(season):
+        if season == "Vinter" and self.region == "Norra":
             pop_change -= 1
-        if season == "Vinter" and not self._has_winter_safe_housing():
-            pop_change -= 2
-        immigrants = self._immigration_flow(season)
-        if self.population <= 2 and self.money >= 10 and self._has_housing_capacity(season):
-            immigrants += 1
-        if self.population <= 3 and self.stability >= 40 and self._has_housing_capacity(season):
-            immigrants += 2
-        if hungry == 0 and homeless == 0 and unpaid_rent == 0:
+        if hungry == 0:
             pop_change += 1
+        if self.unemployed > max(3, self.population // 2):
+            pop_change -= 1
         if self.population <= 5 and pop_change < 0:
             pop_change += 1
-        self.population = max(0, self.population + pop_change + immigrants)
-
-    def _apply_jobs(self):
-        available_jobs = sum(self.jobs.values())
-        if self.population == 0:
-            self.unemployed = 0
-            return
-        employed = min(self.population, available_jobs)
-        self.unemployed = max(0, self.population - employed)
-
-    def _employed_count(self):
-        return max(0, self.population - self.unemployed)
-
-    def _sync_workforce(self):
-        available_jobs = sum(self.jobs.values())
-        if self.population == 0:
-            self.unemployed = 0
-            return
-        employed = min(self.population, available_jobs)
-        self.unemployed = max(0, self.population - employed)
+        self.population = max(0, self.population + pop_change)
 
     def _sync_population(self):
         if self.population > len(self.humans):
             for _ in range(self.population - len(self.humans)):
-                self.humans.append(Human(id=self.next_human_id, money=8))
+                self.humans.append(Human(id=self.next_human_id, money=8, food=30))
                 self.next_human_id += 1
         elif self.population < len(self.humans):
             self.humans = self.humans[: self.population]
-        self.housing_units["Tält"] = max(self.population, self.housing_units.get("Tält", 0))
 
-    def _update_jobs(self):
-        if self.population == 0:
+    def _sync_tents(self):
+        for h in self.humans:
+            if h.home_kind == "Bostadslös" and random.random() < 0.1:
+                h.home_kind = "Tält"
+                h.homeless_months = 0
+        target = sum(1 for h in self.humans if h.home_kind == "Tält")
+        active_tents = [b for b in self.buildings if b.kind == "Tält" and b.active]
+        if len(active_tents) > target:
+            for b in active_tents[target:]:
+                b.active = False
+                b.owner_id = None
+                b.kind = "Övergiven"
+                b.color = "#6b6f7a"
             return
-        if not self.has_megafactory and self.population >= 15:
-            self._add_workplace(kind="Industri", wage=9, capacity=1000, strain=3)
-            self.jobs["Industri"] += 1000
-            self.has_megafactory = True
-            for _ in range(3):
-                self._spawn_building(kind="Industri", color="#f0b34f")
-        growth_factor = 1.0
-        if self.tax_rate <= 0.1:
-            growth_factor *= 1.15
-        if self.month >= 6:
-            if (
-                not self.services.get("Polis", False)
-                or not self.services.get("Brandkår", False)
-                or self.service_funding.get("Polis", 0) < 40
-                or self.service_funding.get("Brandkår", 0) < 40
-            ):
-                growth_factor = 0.7
-        if self.stability < 45:
-            growth_factor *= 0.7
-        elif self.stability > 75:
-            growth_factor *= 1.1
-        target_jobs = max(6, int(self.population * 1.25 * growth_factor))
-        current_jobs = sum(self.jobs.values())
-        if current_jobs >= target_jobs:
+        needed = target - len(active_tents)
+        if needed <= 0:
             return
-        needed = target_jobs - current_jobs
-        base_add = max(1, needed // 2)
-        service_add = max(0, needed // 3)
-        industry_add = max(0, needed - base_add - service_add)
-        self.jobs["Basjobb"] += base_add
-        self.jobs["Service"] += service_add
-        self.jobs["Industri"] += industry_add
-        if base_add > 0:
-            self._add_workplace(kind="Basjobb", wage=6, capacity=base_add, strain=1)
-            for _ in range(max(1, base_add // 3)):
-                self._spawn_building(kind="Basjobb", color="#7cc4ff")
-        if service_add > 0:
-            self._add_workplace(kind="Service", wage=7, capacity=service_add, strain=2)
-            for _ in range(max(1, service_add // 2)):
-                self._spawn_building(kind="Service", color="#ffd166")
-        if industry_add > 0:
-            self._add_workplace(kind="Industri", wage=9, capacity=industry_add, strain=3)
-            for _ in range(max(1, industry_add // 2)):
-                self._spawn_building(kind="Industri", color="#f0b34f")
-        if sum(store.capacity for store in self.food_stores) < max(12, int(self.population * 1.2)):
-            self._add_food_store(kind="Mataffär", price=2, capacity=8)
-            self._spawn_building(kind="Mataffär", color="#6ed26a")
+        inactive = [b for b in self.buildings if not b.active]
+        random.shuffle(inactive)
+        while needed > 0 and inactive:
+            b = inactive.pop()
+            b.kind = "Tält"
+            b.color = "#4caf50"
+            b.active = True
+            b.owner_id = None
+            needed -= 1
+        if needed <= 0:
+            return
+        free = self._available_blocks()
+        while needed > 0 and free:
+            x, y = free.pop()
+            self.buildings.append(Building(x, y, "#4caf50", "Tält", active=True, owner_id=None))
+            needed -= 1
 
-    def _apply_wages(self):
+    def _mark_homeless(self, count):
+        if count <= 0:
+            return
+        candidates = [h for h in self.humans if h.home_kind == "Tält"]
+        random.shuffle(candidates)
+        for h in candidates[:count]:
+            h.home_kind = "Bostadslös"
+            h.homeless_months = 0
+
+    def _employed_count(self):
+        return sum(1 for h in self.humans if h.job_id is not None)
+
+    def _available_blocks(self):
+        used = {(b.x, b.y) for b in self.buildings if b.active}
+        free = []
+        for x in range(2, self.grid_size - 2):
+            for y in range(2, self.grid_size - 2):
+                if (x, y) in used:
+                    continue
+                free.append((x, y))
+        random.shuffle(free)
+        return free
+
+    def _inactive_blocks(self):
+        inactive = [b for b in self.buildings if not b.active]
+        random.shuffle(inactive)
+        return inactive
+
+    def _claim_block(self, kind, color, owner_id, cost_multiplier):
+        if cost_multiplier == 0:
+            cost = 0
+        else:
+            cost = max(BLOCK_COST_MIN, self.block_cost) * cost_multiplier
+        tents = [b for b in self.buildings if b.kind == "Tält" and b.active]
+        if tents:
+            block = tents[0]
+            block.kind = kind
+            block.color = color
+            block.active = True
+            block.owner_id = owner_id
+            self._mark_homeless(1)
+            return block, cost
+        inactive = self._inactive_blocks()
+        if inactive:
+            block = inactive[0]
+            block.kind = kind
+            block.color = color
+            block.active = True
+            block.owner_id = owner_id
+            if cost_multiplier == 0:
+                restore_cost = self.block_restore_cost
+            else:
+                restore_cost = min(
+                    self.block_restore_cost,
+                    int(max(BLOCK_COST_MIN, self.block_cost) * cost_multiplier * 0.5),
+                )
+            return block, restore_cost
+        free = self._available_blocks()
+        if not free:
+            return None, None
+        x, y = free[0]
+        building = Building(x, y, color, kind, active=True, owner_id=owner_id)
+        self.buildings.append(building)
+        return building, cost
+
+    def _claim_blocks(self, kind, color, owner_id, cost_multiplier, blocks_needed):
+        blocks = []
+        total_cost = 0
+        for _ in range(blocks_needed):
+            building, cost = self._claim_block(kind, color, owner_id, cost_multiplier)
+            if building is None:
+                break
+            blocks.append((building.x, building.y))
+            if cost is not None:
+                total_cost += cost
+        if len(blocks) < blocks_needed:
+            for b in self.buildings:
+                if (b.x, b.y) in blocks:
+                    b.active = False
+                    b.owner_id = None
+                    b.kind = "Övergiven"
+                    b.color = "#6b6f7a"
+            return [], 0
+        return blocks, total_cost
+
+    def _find_farm_blocks(self):
+        used = {(b.x, b.y): b for b in self.buildings if b.active}
+        inactive = {(b.x, b.y): b for b in self.buildings if not b.active}
+        candidates = []
+        for x in range(2, self.grid_size - 3):
+            for y in range(2, self.grid_size - 3):
+                cells = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)]
+                if any(c in used and used[c].kind not in ("Tält",) for c in cells):
+                    continue
+                if any(c in inactive or c in used for c in cells):
+                    pass
+                adj = False
+                for cx, cy in cells:
+                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nx, ny = cx + dx, cy + dy
+                        b = used.get((nx, ny))
+                        if b and b.kind in ("Tält", "Bostad"):
+                            adj = True
+                            break
+                    if adj:
+                        break
+                if adj:
+                    candidates.append(cells)
+        random.shuffle(candidates)
+        return candidates, used, inactive
+
+    def _claim_farm_blocks(self, owner_id):
+        candidates, used, inactive = self._find_farm_blocks()
+        if not candidates:
+            return [], 0
+        cells = candidates[0]
+        total_cost = 0
+        for cell in cells:
+            if cell in used:
+                block = used[cell]
+                if block.kind == "Tält":
+                    self._mark_homeless(1)
+                block.kind = "Jordbruk"
+                block.color = WORKPLACE_RULES["Jordbruk"]["color"]
+                block.active = True
+                block.owner_id = owner_id
+                continue
+            if cell in inactive:
+                block = inactive[cell]
+                block.kind = "Jordbruk"
+                block.color = WORKPLACE_RULES["Jordbruk"]["color"]
+                block.active = True
+                block.owner_id = owner_id
+                total_cost += self.block_restore_cost
+                continue
+            x, y = cell
+            self.buildings.append(Building(x, y, WORKPLACE_RULES["Jordbruk"]["color"], "Jordbruk", True, owner_id))
+        return cells, total_cost
+
+    def _adjacent_free_block(self, blocks):
+        used = {(b.x, b.y) for b in self.buildings if b.active}
+        inactive = {(b.x, b.y): b for b in self.buildings if not b.active}
+        for x, y in blocks:
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = x + dx, y + dy
+                if nx < 2 or ny < 2 or nx >= self.grid_size - 2 or ny >= self.grid_size - 2:
+                    continue
+                if (nx, ny) in used:
+                    continue
+                if (nx, ny) in inactive:
+                    return (nx, ny), inactive[(nx, ny)]
+                return (nx, ny), None
+        return None, None
+
+    def _expand_workplaces(self):
+        for w in self.workplaces:
+            if w.kind not in WORKPLACE_RULES or w.kind == "Jordbruk":
+                continue
+            if w.money < max(BLOCK_COST_MIN, self.block_cost):
+                continue
+            if random.random() > 0.05:
+                continue
+            target, inactive = self._adjacent_free_block(w.blocks)
+            if not target:
+                continue
+            rules = WORKPLACE_RULES[w.kind]
+            cost_multiplier = rules["block_cost_multiplier"]
+            cost = max(BLOCK_COST_MIN, self.block_cost) * cost_multiplier
+            if inactive is not None:
+                cost = min(self.block_restore_cost, int(cost * 0.5))
+                if w.money < cost:
+                    continue
+                inactive.kind = w.kind
+                inactive.color = rules["color"]
+                inactive.active = True
+                inactive.owner_id = w.owner_id
+            else:
+                if w.money < cost:
+                    continue
+                x, y = target
+                self.buildings.append(Building(x, y, rules["color"], w.kind, active=True, owner_id=w.owner_id))
+            w.money -= cost
+            self.money += cost
+            w.blocks.append(target)
+
+    def _maybe_upgrade_housing(self):
+        for h in self.humans:
+            if h.home_kind != "Tält":
+                continue
+            if h.money < max(BLOCK_COST_MIN, self.block_cost):
+                continue
+            if random.random() > 0.05:
+                continue
+            building, cost = self._claim_block("Bostad", "#4aa3ff", h.id, 1)
+            if building is None:
+                continue
+            if h.money < cost:
+                continue
+            h.money -= cost
+            self.money += cost
+            h.home_kind = "Hydda"
+
+    def _spawn_new_businesses(self):
+        for h in self.humans:
+            if h.job_id is not None or h.sick:
+                continue
+            roll = random.random()
+            if roll > 0.08:
+                continue
+            if h.status_items >= WORKPLACE_RULES["Industri"]["status_req"]:
+                kind = "Industri"
+            elif h.status_items >= WORKPLACE_RULES["Service"]["status_req"]:
+                kind = "Service"
+            elif h.status_items >= WORKPLACE_RULES["Basjobb"]["status_req"]:
+                kind = "Basjobb"
+            else:
+                kind = "Jordbruk"
+            if kind == "Jordbruk" and h.home_kind not in ("Tält", "Hydda"):
+                continue
+            self._create_workplace(h, kind)
+
+    def _create_workplace(self, owner: Human, kind: str):
+        rules = WORKPLACE_RULES[kind]
+        if kind == "Jordbruk":
+            blocks, total_cost = self._claim_farm_blocks(owner.id)
+            if not blocks:
+                return False
+        elif kind == "Industri":
+            blocks_needed = random.choice(rules["blocks_choices"])
+        else:
+            blocks_needed = random.randint(rules["blocks_min"], rules["blocks_max"])
+        capacity = random.randint(rules["capacity_min"], rules["capacity_max"])
+        if kind != "Jordbruk":
+            blocks, total_cost = self._claim_blocks(
+                kind, rules["color"], owner.id, rules["block_cost_multiplier"], blocks_needed
+            )
+            if not blocks:
+                return False
+        if total_cost > 0:
+            if owner.money < total_cost:
+                needed = total_cost - owner.money
+                if not self._take_loan(owner, needed):
+                    for b in self.buildings:
+                        if (b.x, b.y) in blocks:
+                            b.active = False
+                            b.owner_id = None
+                    return False
+            owner.money -= total_cost
+            self.money += total_cost
+        workplace = Workplace(
+            id=self.next_workplace_id,
+            kind=kind,
+            wage=rules["wage"],
+            capacity=capacity,
+            strain=rules["strain"],
+            owner_id=owner.id,
+            money=0,
+            blocks=blocks,
+        )
+        self.next_workplace_id += 1
+        if owner.money > 0:
+            seed = min(owner.money, max(rules["wage"], rules["wage"] * max(1, capacity // 2)))
+            owner.money -= seed
+            workplace.money += seed
+        self.workplaces.append(workplace)
+        return True
+
+    def _assign_jobs_and_pay_wages(self):
         for w in self.workplaces:
             w.employed = 0
         for h in self.humans:
             h.job_id = None
-        available = []
+
+        job_slots = []
         for w in self.workplaces:
-            available.extend([w] * w.capacity)
-        random.shuffle(available)
-        for h, w in zip(self.humans, available):
+            job_slots.extend([w] * w.capacity)
+        random.shuffle(job_slots)
+
+        owners = {w.owner_id: w for w in self.workplaces if w.owner_id is not None}
+        for h in self.humans:
+            if h.id in owners and not h.sick:
+                w = owners[h.id]
+                h.job_id = w.id
+                w.employed += 1
+                if w in job_slots:
+                    job_slots.remove(w)
+
+        for h, w in zip([h for h in self.humans if h.job_id is None], job_slots):
             if h.sick:
                 continue
             h.job_id = w.id
-            h.money += w.wage
             w.employed += 1
 
-    def _apply_food(self):
-        for store in self.food_stores:
-            store.sold = 0
-        hungry = 0
-        price = min((s.price for s in self.food_stores), default=3)
-        available_food = sum(store.capacity for store in self.food_stores)
-        for h in self.humans:
-            if available_food <= 0:
-                h.hungry = True
-                hungry += 1
-                continue
-            if h.money >= price:
-                h.money -= price
-                available_food -= 1
-                self._consume_store_unit()
-                h.hungry = False
+        for w in self.workplaces:
+            if w.employed == 0:
+                w.idle_months += 1
             else:
-                h.hungry = True
-                hungry += 1
-        if hungry > 0 or available_food < self.population:
-            self._add_food_store(kind="Mataffär", price=2, capacity=8)
-            self._spawn_building(kind="Mataffär", color="#6ed26a")
-        return hungry
+                w.idle_months = 0
+            wages_due = w.employed * w.wage
+            if wages_due <= 0:
+                continue
+            pay_count = w.employed
+            if w.money < wages_due:
+                pay_count = w.money // w.wage
+            paid = 0
+            for h in self.humans:
+                if h.job_id != w.id:
+                    continue
+                if paid >= pay_count:
+                    h.job_id = None
+                    continue
+                h.money += w.wage
+                paid += 1
+            w.employed = paid
+            wages_paid = paid * w.wage
+            w.money -= wages_paid
+            if w.kind != "Jordbruk":
+                w.money += wages_paid * 4
+            else:
+                w.money += wages_paid * 4
 
-    def _consume_store_unit(self):
-        for store in self.food_stores:
-            if store.sold < store.capacity:
-                store.sold += 1
-                return
+        self.unemployed = sum(1 for h in self.humans if h.job_id is None)
 
-    def _update_health(self, hungry, homeless, unpaid_rent):
-        season = self.season()
-        homeless_ratio = homeless / self.population if self.population > 0 else 0
-        unpaid_ratio = unpaid_rent / self.population if self.population > 0 else 0
+    def _apply_food(self):
         for h in self.humans:
+            h.hungry = False
+            if h.food >= FOOD_MONTHLY_NEED:
+                h.food -= FOOD_MONTHLY_NEED
+            else:
+                h.food = 0
+                h.hungry = True
+
+        farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
+        food_supply = sum(w.employed for w in farms) * FOOD_FARM_PER_EMPLOYEE_MONTH
+        self.last_food_supply = food_supply
+        sold = 0
+
+        for h in self.humans:
+            if h.food >= FOOD_BUY_THRESHOLD:
+                continue
+            if food_supply <= 0:
+                continue
+            if h.money < self.food_price:
+                if self._take_loan(h, self.food_price * 5):
+                    h.money += self.food_price * 5
+                else:
+                    continue
+            buy_amount = min(10, FOOD_MAX - h.food, food_supply)
+            if buy_amount <= 0:
+                continue
+            cost = buy_amount * self.food_price
+            if h.money < cost:
+                buy_amount = max(0, h.money // self.food_price)
+                cost = buy_amount * self.food_price
+            if buy_amount <= 0:
+                continue
+            h.money -= cost
+            h.food += buy_amount
+            food_supply -= buy_amount
+            sold += buy_amount
+
+        self.last_food_sold = sold
+        if farms and sold > 0:
+            total_employed = sum(w.employed for w in farms)
+            if total_employed > 0:
+                revenue = sold * self.food_price
+                for w in farms:
+                    share = w.employed / total_employed
+                    w.money += int(revenue * share)
+
+        for h in self.humans:
+            if h.food == 0 and h.sick:
+                h.food = min(FOOD_MAX, h.food + 10)
+
+        return sum(1 for h in self.humans if h.hungry)
+
+    def _apply_status_purchases(self):
+        for h in self.humans:
+            if h.home_kind == "Tält":
+                continue
+            if h.status_items >= 100:
+                continue
+            if h.money < 10:
+                continue
+            if random.random() > 0.2:
+                continue
+            h.money -= 10
+            h.status_items += 1
+
+    def _update_health(self, hungry):
+        season = self.season()
+        for h in self.humans:
+            if h.home_kind == "Bostadslös":
+                h.homeless_months += 1
+                if h.homeless_months >= 12:
+                    h.status_items = 0
             energy_loss = 1
             if h.hungry:
                 energy_loss += 3
-            energy_loss += int(2 * homeless_ratio + 0.5)
-            energy_loss += int(1 * unpaid_ratio + 0.5)
             if season == "Vinter":
                 energy_loss += 1
             if h.job_id is not None:
                 job = next((w for w in self.workplaces if w.id == h.job_id), None)
                 if job:
                     energy_loss += max(1, job.strain - 1)
+            status_buffer = min(3, h.status_items // 10)
+            energy_loss = max(0, energy_loss - status_buffer)
             energy_gain = 0
             if not h.hungry:
                 energy_gain += 2
@@ -521,6 +811,8 @@ class World:
             if h.energy < 30:
                 h.health = max(0, h.health - 2)
             elif h.energy > 60 and not h.hungry:
+                h.health = min(100, h.health + 1)
+            if h.status_items >= 5 and h.health < 100:
                 h.health = min(100, h.health + 1)
 
             if self.services.get("Sjukvård", False) and self.service_funding.get("Sjukvård", 0) >= 50:
@@ -534,175 +826,135 @@ class World:
         return sum(1 for h in self.humans if h.sick)
 
     def _update_building_activity(self):
-        kind_to_buildings = {}
-        for b in self.buildings:
-            kind_to_buildings.setdefault(b.kind, []).append(b)
-
-        workplace_kinds = {
-            "Basjobb": self.jobs.get("Basjobb", 0),
-            "Service": self.jobs.get("Service", 0),
-            "Industri": self.jobs.get("Industri", 0),
-        }
-        for kind, total_jobs in workplace_kinds.items():
-            buildings = kind_to_buildings.get(kind, [])
-            if not buildings:
-                continue
-            employed = 0
-            for w in self.workplaces:
-                if w.kind == kind:
-                    employed += w.employed
-            target_active = max(0, min(len(buildings), employed // 2))
-            self._set_active_buildings(buildings, target_active)
-
-        store_buildings = kind_to_buildings.get("Mataffär", [])
-        if store_buildings:
-            sold = sum(s.sold for s in self.food_stores)
-            target_active = max(0, min(len(store_buildings), sold // 4))
-            self._set_active_buildings(store_buildings, target_active)
-
-    def _set_active_buildings(self, buildings, target_active):
-        active = [b for b in buildings if b.active]
-        if len(active) > target_active:
-            random.shuffle(active)
-            for b in active[target_active:]:
-                b.active = False
-        elif len(active) < target_active:
-            inactive = [b for b in buildings if not b.active]
-            random.shuffle(inactive)
-            for b in inactive[: target_active - len(active)]:
-                b.active = True
-
-    def _apply_housing(self):
-        season = self.season()
-        slots = []
-        for name, units in self.housing_units.items():
-            if season not in self.housing_allowed_seasons.get(name, set()):
-                continue
-            cap = self.housing_capacity.get(name, 0)
-            cost = self.housing_cost.get(name, 0)
-            slots.extend([cost] * (units * cap))
-        slots.sort()
-        homeless = 0
-        unpaid = 0
-        for h in self.humans:
-            if not slots:
-                homeless += 1
-                continue
-            cost = slots.pop(0)
-            if cost == 0:
-                continue
-            if h.money >= cost:
-                h.money -= cost
+        for w in self.workplaces:
+            if w.employed == 0:
+                for b in self.buildings:
+                    if b.owner_id == w.owner_id and b.kind == w.kind:
+                        b.active = False
             else:
-                unpaid += 1
-        return homeless, unpaid
+                for b in self.buildings:
+                    if b.owner_id == w.owner_id and b.kind == w.kind:
+                        b.active = True
 
-    def _immigration_flow(self, season):
-        if not self._has_housing_capacity(season):
-            return 0
-        score = 0
-        if self.stability >= 60:
-            score += 1
-        if self.stability >= 75:
-            score += 1
-        if self.stability <= 35:
-            score -= 1
-        if self.money >= 30:
-            score += 1
-        if self._employed_count() < sum(self.jobs.values()):
-            score += 1
-        if self.tax_rate <= 0.1:
-            score += 1
-        if season == "Vinter" and self.region == "Norra":
-            score -= 1
-        return max(0, score // 2)
-
-    def _update_buildings(self):
-        total_capacity = sum(
-            units * self.housing_capacity.get(name, 0)
-            for name, units in self.housing_units.items()
-        )
-        permanent_capacity = sum(
-            units * self.housing_capacity.get(name, 0)
-            for name, units in self.housing_units.items()
-            if "Vinter" in self.housing_allowed_seasons.get(name, set())
-        )
-        target_capacity = max(self.population + 2, int(self.population * 1.1))
-        if self.population <= total_capacity:
-            self._update_abandoned_buildings()
-            if permanent_capacity < target_capacity:
-                self.housing_units["Hydda"] += 1
-                self._spawn_building(kind="Bostad", color="#4aa3ff")
-            return
-        needed = max(1, (self.population - total_capacity + 2) // 2)
-        self.housing_units["Hydda"] += needed
-        for _ in range(needed):
-            self._spawn_building(kind="Bostad", color="#4aa3ff")
-        self._update_abandoned_buildings()
-
-    def _update_abandoned_buildings(self):
-        housing_buildings = [b for b in self.buildings if b.kind == "Bostad"]
-        if not housing_buildings:
-            return
-        target_active = max(1, min(len(housing_buildings), (self.population // 2) + 1))
-        active_buildings = [b for b in housing_buildings if b.active]
-        if len(active_buildings) > target_active:
-            random.shuffle(active_buildings)
-            for b in active_buildings[target_active:]:
-                b.active = False
-        elif len(active_buildings) < target_active:
-            inactive = [b for b in housing_buildings if not b.active]
-            random.shuffle(inactive)
-            for b in inactive[: target_active - len(active_buildings)]:
-                b.active = True
-
-    def _spawn_building(self, kind, color):
-        for b in self.buildings:
-            if b.kind == kind and not b.active:
-                b.active = True
-                return
-        center = self.grid_size // 2
-        for _ in range(50):
-            x = random.randint(2, self.grid_size - 3)
-            y = random.randint(2, self.grid_size - 3)
-            if abs(x - center) <= 3 and abs(y - center) <= 3:
+    def _cleanup_abandoned_workplaces(self):
+        active = []
+        for w in self.workplaces:
+            if w.kind == "Jordbruk":
+                for b in self.buildings:
+                    if b.kind != "Industri" or not b.active:
+                        continue
+                    for fx, fy in w.blocks:
+                        if abs(b.x - fx) + abs(b.y - fy) <= 4:
+                            w.idle_months = 6
+                            break
+                    if w.idle_months >= 6:
+                        break
+            if w.idle_months < 6:
+                active.append(w)
                 continue
-            if any(b.x == x and b.y == y for b in self.buildings):
-                continue
-            self.buildings.append(Building(x, y, color, kind))
+            for b in self.buildings:
+                if (b.x, b.y) in w.blocks:
+                    b.active = False
+                    b.owner_id = None
+                    b.kind = "Övergiven"
+                    b.color = "#6b6f7a"
+        self.workplaces = active
+
+    def _bank_base_rate(self):
+        rate = 0.01 + (1 - self.stability / 100) * 0.09
+        rate = max(0.01, min(0.10, rate))
+        self.last_bank_rate = rate
+        return rate
+
+    def _bank_deposits(self):
+        deposits = sum(h.money for h in self.humans) + sum(w.money for w in self.workplaces)
+        return max(0, deposits)
+
+    def _bank_total_loans(self):
+        loans = sum(h.loan_balance for h in self.humans) + sum(w.loan_balance for w in self.workplaces)
+        return max(0, loans)
+
+    def _take_loan(self, target, amount):
+        if amount <= 0:
+            return False
+        deposits = self._bank_deposits()
+        max_loans = deposits * 0.5
+        if self._bank_total_loans() + amount > max_loans:
+            return False
+        limit = 0
+        if isinstance(target, Human):
+            limit = target.money * 10
+        elif isinstance(target, Workplace):
+            limit = max(1, target.money) * 10
+        if amount > max(limit, 0):
+            return False
+        target.loan_balance += amount
+        return True
+
+    def _apply_bank_interest_and_loans(self):
+        if self.month % 12 != 0:
             return
+        base_rate = self._bank_base_rate()
+        for h in self.humans:
+            if h.money > 0:
+                h.money += int(h.money * base_rate)
+        for h in self.humans:
+            if h.loan_balance <= 0:
+                continue
+            rate = max(0.0, base_rate * 2 - (h.status_items * 0.0001))
+            interest = int(h.loan_balance * rate)
+            amort = max(1, int(h.loan_balance * 0.1))
+            payment = interest + amort
+            if h.money >= payment:
+                h.money -= payment
+                h.loan_balance = max(0, h.loan_balance - amort)
+                h.loan_years_missed = 0
+            else:
+                h.loan_years_missed += 1
+                h.health = max(0, h.health - 5)
+        survivors = []
+        for w in self.workplaces:
+            if w.loan_balance <= 0:
+                survivors.append(w)
+                continue
+            rate = base_rate * 2
+            interest = int(w.loan_balance * rate)
+            amort = max(1, int(w.loan_balance * 0.1))
+            payment = interest + amort
+            if w.money >= payment:
+                w.money -= payment
+                w.loan_balance = max(0, w.loan_balance - amort)
+                w.loan_years_missed = 0
+                survivors.append(w)
+            else:
+                w.loan_years_missed += 1
+                if w.loan_years_missed >= 3:
+                    for b in self.buildings:
+                        if (b.x, b.y) in w.blocks:
+                            b.active = False
+                            b.owner_id = None
+                else:
+                    survivors.append(w)
+        self.workplaces = survivors
 
-    def _add_workplace(self, kind, wage, capacity, strain=1):
-        self.workplaces.append(
-            Workplace(id=self.next_workplace_id, kind=kind, wage=wage, capacity=capacity, strain=strain)
-        )
-        self.next_workplace_id += 1
+        for h in self.humans:
+            if h.loan_years_missed >= 3:
+                h.job_id = None
+                h.status_items = 0
+                h.loan_balance = 0
+                h.loan_years_missed = 0
+                for w in list(self.workplaces):
+                    if w.owner_id == h.id:
+                        for b in self.buildings:
+                            if (b.x, b.y) in w.blocks:
+                                b.active = False
+                                b.owner_id = None
+                        self.workplaces.remove(w)
 
-    def _add_food_store(self, kind, price, capacity):
-        self.food_stores.append(
-            FoodStore(id=self.next_store_id, kind=kind, price=price, capacity=capacity)
-        )
-        self.next_store_id += 1
-
-    def _housing_monthly_cost(self):
-        return sum(
-            units * self.housing_cost[name]
-            for name, units in self.housing_units.items()
-        )
-
-    def _has_housing_capacity(self, season):
-        capacity = 0
-        for name, units in self.housing_units.items():
-            if season in self.housing_allowed_seasons.get(name, set()):
-                capacity += units * self.housing_capacity.get(name, 0)
-        return capacity >= self.population
-
-    def _has_winter_safe_housing(self):
-        capacity = 0
-        for name, units in self.housing_units.items():
-            if "Vinter" in self.housing_allowed_seasons.get(name, set()):
-                capacity += units * self.housing_capacity.get(name, 0)
-        return capacity >= self.population
+    def _calc_food_status(self):
+        if self.population <= 0:
+            return 1.0
+        return max(0.0, 1.0 - (self.last_hungry / self.population))
 
     def to_dict(self):
         return {
@@ -718,17 +970,10 @@ class World:
             "service_costs": self.service_costs,
             "service_funding": self.service_funding,
             "budget_allocations": self.budget_allocations,
-            "housing_units": self.housing_units,
-            "housing_capacity": self.housing_capacity,
-            "housing_cost": self.housing_cost,
-            "housing_allowed_seasons": {
-                name: sorted(list(seasons))
-                for name, seasons in self.housing_allowed_seasons.items()
-            },
-            "jobs": self.jobs,
+            "block_cost": self.block_cost,
+            "block_restore_cost": self.block_restore_cost,
+            "food_price": self.food_price,
             "unemployed": self.unemployed,
-            "immigration_buffer": self.immigration_buffer,
-            "has_megafactory": self.has_megafactory,
             "month": self.month,
             "history": self.history,
             "history_year": self.history_year,
@@ -736,19 +981,19 @@ class World:
             "last_revenue": self.last_revenue,
             "last_expenses": self.last_expenses,
             "last_hungry": self.last_hungry,
-            "last_homeless": self.last_homeless,
-            "last_unpaid_rent": self.last_unpaid_rent,
             "last_sick": self.last_sick,
+            "last_unemployed": self.last_unemployed,
+            "last_food_supply": self.last_food_supply,
+            "last_food_sold": self.last_food_sold,
+            "last_bank_rate": self.last_bank_rate,
             "year_revenue": self.year_revenue,
             "year_expenses": self.year_expenses,
             "last_year_revenue": self.last_year_revenue,
             "last_year_expenses": self.last_year_expenses,
             "humans": [h.__dict__ for h in self.humans],
             "workplaces": [w.__dict__ for w in self.workplaces],
-            "food_stores": [s.__dict__ for s in self.food_stores],
             "next_human_id": self.next_human_id,
             "next_workplace_id": self.next_workplace_id,
-            "next_store_id": self.next_store_id,
         }
 
     @staticmethod
@@ -768,34 +1013,26 @@ class World:
         world.service_costs = data.get("service_costs", world.service_costs)
         world.service_funding = data.get("service_funding", world.service_funding)
         world.budget_allocations = data.get("budget_allocations", world.budget_allocations)
-        world.housing_units = data.get("housing_units", world.housing_units)
-        world.housing_capacity = data.get("housing_capacity", world.housing_capacity)
-        world.housing_cost = data.get("housing_cost", world.housing_cost)
-        allowed = data.get("housing_allowed_seasons")
-        if allowed:
-            world.housing_allowed_seasons = {
-                name: set(seasons) for name, seasons in allowed.items()
-            }
-        world.jobs = data.get("jobs", world.jobs)
+        world.block_cost = data.get("block_cost", world.block_cost)
+        world.block_restore_cost = data.get("block_restore_cost", world.block_restore_cost)
+        world.food_price = data.get("food_price", world.food_price)
         world.unemployed = data.get("unemployed", world.unemployed)
-        world.immigration_buffer = data.get("immigration_buffer", world.immigration_buffer)
-        world.has_megafactory = data.get("has_megafactory", world.has_megafactory)
         world.last_revenue = data.get("last_revenue", world.last_revenue)
         world.last_expenses = data.get("last_expenses", world.last_expenses)
         world.last_hungry = data.get("last_hungry", world.last_hungry)
-        world.last_homeless = data.get("last_homeless", world.last_homeless)
-        world.last_unpaid_rent = data.get("last_unpaid_rent", world.last_unpaid_rent)
         world.last_sick = data.get("last_sick", world.last_sick)
+        world.last_unemployed = data.get("last_unemployed", world.last_unemployed)
+        world.last_food_supply = data.get("last_food_supply", world.last_food_supply)
+        world.last_food_sold = data.get("last_food_sold", world.last_food_sold)
+        world.last_bank_rate = data.get("last_bank_rate", world.last_bank_rate)
         world.year_revenue = data.get("year_revenue", world.year_revenue)
         world.year_expenses = data.get("year_expenses", world.year_expenses)
         world.last_year_revenue = data.get("last_year_revenue", world.last_year_revenue)
         world.last_year_expenses = data.get("last_year_expenses", world.last_year_expenses)
         world.humans = [Human(**item) for item in data.get("humans", world.humans)]
         world.workplaces = [Workplace(**item) for item in data.get("workplaces", world.workplaces)]
-        world.food_stores = [FoodStore(**item) for item in data.get("food_stores", world.food_stores)]
         world.next_human_id = data.get("next_human_id", world.next_human_id)
         world.next_workplace_id = data.get("next_workplace_id", world.next_workplace_id)
-        world.next_store_id = data.get("next_store_id", world.next_store_id)
         world.month = data.get("month", world.month)
         world.history = data.get("history", world.history)
         world.history_year = data.get("history_year", world.history_year)
@@ -805,4 +1042,3 @@ class World:
         if buildings:
             world.buildings = buildings
         return world
-

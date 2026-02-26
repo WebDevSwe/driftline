@@ -5,6 +5,7 @@ def test_world_initializes_with_buildings():
     world = World(WorldConfig(name="Test", size_label="Medium", region="Medel"))
     assert world.buildings
     assert world.grid_size == 60
+    assert world.population == len(world.humans)
 
 
 def test_annual_tax_only_on_month_12():
@@ -23,8 +24,8 @@ def test_annual_tax_only_on_month_12():
     assert world.money >= 0
 
 
-def test_housing_tents_scale_with_population():
+def test_food_consumption_changes_inventory():
     world = World(WorldConfig(name="Test", size_label="Liten", region="Medel"))
-    world.population = 25
-    world._sync_population()
-    assert world.housing_units["Tält"] >= 25
+    start_food = world.humans[0].food
+    world.advance_month()
+    assert world.humans[0].food <= start_food

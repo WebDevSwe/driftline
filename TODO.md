@@ -85,4 +85,4 @@ Välden startar med ett centralt torg öppet för handel. Människor vandrar in 
 - Max energi
 - Kapacitet
 - Livslängd
-- Helsa
+- Hälsa

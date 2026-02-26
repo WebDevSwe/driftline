@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class WorldConfig:
@@ -15,6 +15,7 @@ class Building:
     color: str
     kind: str
     active: bool = True
+    owner_id: int | None = None
 
 @dataclass
 class Human:
@@ -25,6 +26,12 @@ class Human:
     energy: int = 100
     health: int = 100
     sick: bool = False
+    food: int = 40
+    status_items: int = 0
+    loan_balance: int = 0
+    loan_years_missed: int = 0
+    homeless_months: int = 0
+    home_kind: str = "Tält"
 
 @dataclass
 class Workplace:
@@ -34,6 +41,12 @@ class Workplace:
     capacity: int
     employed: int = 0
     strain: int = 1
+    owner_id: int | None = None
+    money: int = 0
+    blocks: list[tuple[int, int]] = field(default_factory=list)
+    loan_balance: int = 0
+    loan_years_missed: int = 0
+    idle_months: int = 0
 
 @dataclass
 class FoodStore:

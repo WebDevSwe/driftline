@@ -187,8 +187,10 @@ class App(ctk.CTk):
             f"Pengar: {self.world.money} | "
             f"Population: {self.world.population} | "
             f"Sysselsättning: {employed} | "
+            f"Arbetslösa: {self.world.unemployed} | "
             f"Sjuka: {self.world.last_sick} | "
             f"Stabilitet: {self.world.stability} | "
+            f"Bankränta: {self.world.last_bank_rate:.2%} | "
             f"Skatt: {'NU' if tax_month else 'senare'} | "
             f"Tid: {self.world.formatted_time()}"
         )
@@ -411,6 +413,21 @@ class App(ctk.CTk):
         self.tax_label.pack(side=tk.RIGHT)
         self.tax_slider.set(self.world.tax_rate * 100)
 
+        ctk.CTkLabel(content, text="Blockkostnad (min 1):").pack(anchor="w", pady=(8, 4))
+        block_row = ctk.CTkFrame(content, fg_color="transparent")
+        block_row.pack(fill=tk.X, pady=2)
+        self.block_slider = ctk.CTkSlider(
+            block_row,
+            from_=1,
+            to=1000,
+            number_of_steps=999,
+            command=self._set_block_cost,
+        )
+        self.block_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.block_label = ctk.CTkLabel(block_row, text="100")
+        self.block_label.pack(side=tk.RIGHT)
+        self.block_slider.set(self.world.block_cost)
+
         ctk.CTkLabel(content, text="Service-budget (%):").pack(anchor="w", pady=(8, 4))
         self.service_sliders = {}
         for name in ["Polis", "Brandkår", "Sjukvård", "Skola", "Barnomsorg", "A-kassa"]:
@@ -453,6 +470,9 @@ class App(ctk.CTk):
         if hasattr(self, "tax_slider"):
             self.tax_slider.set(self.world.tax_rate * 100)
             self.tax_label.configure(text=f"{int(self.world.tax_rate * 100)}%")
+        if hasattr(self, "block_slider"):
+            self.block_slider.set(self.world.block_cost)
+            self.block_label.configure(text=f"{int(self.world.block_cost)}")
         for name, (slider, value_label) in self.service_sliders.items():
             value = self.world.service_funding.get(name, 0)
             value_label.configure(text=f"{int(value)}%")
@@ -482,6 +502,15 @@ class App(ctk.CTk):
         self.world.tax_rate = int(value) / 100.0
         if hasattr(self, "tax_label"):
             self.tax_label.configure(text=f"{int(value)}%")
+
+    def _set_block_cost(self, value):
+        if not self.world:
+            return
+        if self._updating_budget:
+            return
+        self.world.block_cost = max(1, int(value))
+        if hasattr(self, "block_label"):
+            self.block_label.configure(text=f"{int(self.world.block_cost)}")
 
     def _draw_chart(self, data):
         canvas = self.stats_canvas
@@ -550,7 +579,27 @@ class App(ctk.CTk):
             color = building.color
             if not building.active:
                 color = "#6b6f7a"
-            self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+            if building.kind == "Tält":
+                self.canvas.create_oval(x1, y1, x2, y2, fill=color, outline="")
+            elif building.kind == "Jordbruk":
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill="#8b5a2b", outline="")
+                dot_color = "#c7a17a"
+                dot_radius = max(1, cell // 8)
+                spacing = max(dot_radius + 1, cell // 3)
+                for dx in range(0, int(cell), spacing):
+                    for dy in range(0, int(cell), spacing):
+                        cx = x1 + dx + dot_radius
+                        cy = y1 + dy + dot_radius
+                        self.canvas.create_oval(
+                            cx - dot_radius,
+                            cy - dot_radius,
+                            cx + dot_radius,
+                            cy + dot_radius,
+                            fill=dot_color,
+                            outline="",
+                        )
+            else:
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
 
 if __name__ == "__main__":
     ctk.set_appearance_mode("dark")
