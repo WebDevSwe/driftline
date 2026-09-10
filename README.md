@@ -19,6 +19,7 @@ python main.py
 - 1 tick = 1 month
 - 12 months = 1 year
 - Tax revenue is collected once per year (month 12)
+- New worlds start in pause mode
 
 ### World & Regions
 - Grid size from `Liten/Medium/Stor`
@@ -44,7 +45,17 @@ python main.py
 
 ## Population
 - Population changes each tick based on stability, money, season, hunger, unemployment, and health
+- New arrivals start with 0.5–3 months of wages as initial capital
 - There is no auto-job creation; jobs come from citizen-owned workplaces
+
+## Drives
+- Citizens have a drive that shapes behavior
+- `företagare` start businesses more often
+- `lantbruk` prioritizes farming
+- `tältliv` stays in tents longer
+- `status` buys status items more often
+- `risk` more willing to start businesses
+- `sparsam` spends less on status items
 
 ## Blocks & Ownership
 - The state sells unused blocks
@@ -52,17 +63,24 @@ python main.py
 - Abandoned blocks can be restored for a fixed restoration cost
 - Tents use blocks at no cost and are freed when no longer needed
 - Blocks used for housing or workplaces must be purchased
-- Block cost is never below 100 and can be adjusted in the budget window
+- Block cost is never below 1 and can be adjusted in the budget window
+- New buildings try to form contiguous rectangles before falling back to scattered blocks
 
 ## Housing
 - Citizens start in tents and can buy housing blocks to upgrade to `Hydda`
+- Housing can be shared; tenants pay rent (6 SM per month) to owners
 - If a tent is taken over by construction, that citizen becomes homeless
+- Tents can host up to 4 people and do not allow rent
+- Citizens with money avoid tents when possible
 - Homeless citizens lose all status items after 12 months
 - Homeless citizens can re-enter tents over time
+- In winter, tent dwellers try to move indoors or become homeless
 
 ## Workplaces & Jobs
 - Workplaces are created by citizens, not auto-generated
-- Each workplace has output equal to 4x wage cost
+- Owners can run multiple businesses
+- Jobs pay 20–1000 SM per month, scaled by job type and status items
+- Owners also earn a business share of wages (profit)
 - If a workplace cannot pay everyone, remaining employees become unemployed
 - Workplaces expand to adjacent free or abandoned blocks if they can afford it
 
@@ -72,8 +90,12 @@ python main.py
 - Must be placed adjacent to a tent or housing
 - 0 block cost, but abandoned blocks still cost restoration
 - Up to 10 workers (including owner)
-- Produces food (8x yearly need per employee)
+- Produces food (16 per employee per month)
 - Abandoned if an industry is within 4 blocks
+- `Mataffär`
+- 1–2 blocks, citizen-owned
+- Buys food for 0.5 SM (or from external market if farms are empty)
+- Sells food for 2 SM
 - `Basjobb`
 - 1–2 blocks
 - Requires at least 1 status item
@@ -93,17 +115,19 @@ python main.py
 - Bank lends at most 50% of total deposits
 - Individuals can borrow up to 10x their bank balance
 - Unpaid loans reduce health; after 3 years in default, bankruptcy occurs
+- If a citizen hits 0 money, they sell owned housing at half value, lose jobs, and move to tent/homeless depending on season
 
 ## Food
 - Citizens store up to 100 food
 - They consume 2 food per month
 - When food is below 30 they try to buy more
 - If food hits 0 they become hungry and health drops
+- Food is bought directly from farms first, then from stores
 - The state can provide 10 food to starving, sick citizens
 
 ## Status Items
 - Available only when living in housing better than a tent
-- Cost 10 block cost each
+- Cost 10 SM each
 - Reduce energy loss and improve health
 - Lost after 12 months of homelessness
 - Money spent on status items leaves the economy
@@ -124,6 +148,7 @@ python main.py
 - Basjobb is light blue blocks
 - Service is yellow blocks
 - Industry is orange blocks
+- Mataffär is teal blocks
 - Farms are brown dotted blocks
 - Abandoned blocks are gray
 - Food bar shows percent not hungry

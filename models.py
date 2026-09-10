@@ -21,6 +21,9 @@ class Building:
 class Human:
     id: int
     money: int
+    name: str = "Invånare"
+    age: int = 18
+    drive: str = "sparsam"
     job_id: int | None = None
     hungry: bool = False
     energy: int = 100
@@ -32,6 +35,7 @@ class Human:
     loan_years_missed: int = 0
     homeless_months: int = 0
     home_kind: str = "Tält"
+    home_owner_id: int | None = None
 
 @dataclass
 class Workplace:
@@ -47,6 +51,7 @@ class Workplace:
     loan_balance: int = 0
     loan_years_missed: int = 0
     idle_months: int = 0
+    stock_food: int = 0
 
 @dataclass
 class FoodStore:

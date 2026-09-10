@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from bisect import bisect_right
 
 from models import Building, Human, Workplace, WorldConfig
 
@@ -18,6 +19,10 @@ FOOD_MAX = 100
 FOOD_BUY_THRESHOLD = 30
 FOOD_MONTHLY_NEED = 2
 FOOD_FARM_PER_EMPLOYEE_MONTH = 16
+RENT_COST = 6
+FOOD_PRICE = 2
+STORE_BUY_PRICE = 0.5
+TENT_CAPACITY = 4
 
 WORKPLACE_RULES = {
     "Jordbruk": {
@@ -25,10 +30,21 @@ WORKPLACE_RULES = {
         "block_cost_multiplier": 0,
         "capacity_min": 1,
         "capacity_max": 10,
-        "wage": 4,
+        "wage": 20,
         "strain": 1,
         "status_req": 0,
         "color": "#6ed26a",
+    },
+    "Mataffär": {
+        "blocks_min": 1,
+        "blocks_max": 2,
+        "block_cost_multiplier": 2,
+        "capacity_min": 2,
+        "capacity_max": 20,
+        "wage": 80,
+        "strain": 1,
+        "status_req": 1,
+        "color": "#2eb6a8",
     },
     "Basjobb": {
         "blocks_min": 1,
@@ -36,7 +52,7 @@ WORKPLACE_RULES = {
         "block_cost_multiplier": 2,
         "capacity_min": 1,
         "capacity_max": 20,
-        "wage": 6,
+        "wage": 60,
         "strain": 1,
         "status_req": 1,
         "color": "#7cc4ff",
@@ -47,7 +63,7 @@ WORKPLACE_RULES = {
         "block_cost_multiplier": 10,
         "capacity_min": 1,
         "capacity_max": 100,
-        "wage": 7,
+        "wage": 140,
         "strain": 2,
         "status_req": 2,
         "color": "#ffd166",
@@ -57,7 +73,7 @@ WORKPLACE_RULES = {
         "block_cost_multiplier": 100,
         "capacity_min": 100,
         "capacity_max": 10000,
-        "wage": 9,
+        "wage": 300,
         "strain": 3,
         "status_req": 10,
         "color": "#f0b34f",
@@ -174,6 +190,23 @@ class World:
         self.year_expenses = 0
         self.last_year_revenue = 0
         self.last_year_expenses = 0
+        self._first_names = [
+            "Alex", "Erik", "Sara", "Lina", "Oskar", "Nora", "Emil", "Maja",
+            "Karl", "Vera", "Anton", "Elsa", "Leo", "Sofia", "Johan", "Ida",
+        ]
+        self._last_names = [
+            "Andersson", "Johansson", "Karlsson", "Nilsson", "Larsson",
+            "Olsson", "Persson", "Svensson", "Gustafsson", "Pettersson",
+        ]
+        self._drives = [
+            ("företagare", 0.18),
+            ("lantbruk", 0.12),
+            ("tältliv", 0.08),
+            ("status", 0.18),
+            ("risk", 0.14),
+            ("sparsam", 0.30),
+        ]
+
         self._seed_world()
         self._seed_population()
         self._record_history()
@@ -189,7 +222,16 @@ class World:
 
     def _seed_population(self):
         for _ in range(self.population):
-            self.humans.append(Human(id=self.next_human_id, money=10, food=40))
+            self.humans.append(
+                Human(
+                    id=self.next_human_id,
+                    money=self._starting_capital(),
+                    food=40,
+                    name=self._random_name(),
+                    age=random.randint(18, 35),
+                    drive=self._random_drive(),
+                )
+            )
             self.next_human_id += 1
 
     def advance_month(self):
@@ -220,16 +262,21 @@ class World:
 
     def _apply_economy(self):
         self._sync_population()
+        self._age_population()
         self._maybe_upgrade_housing()
+        self._assign_housing()
         self._sync_tents()
         self._spawn_new_businesses()
         self._assign_jobs_and_pay_wages()
         self._expand_workplaces()
         hungry = self._apply_food()
+        self._apply_bankruptcy()
         self._update_building_activity()
         sick = self._update_health(hungry)
         self._apply_status_purchases()
+        self._apply_unemployment_support()
         self._apply_bank_interest_and_loans()
+        self._clamp_balances()
 
         season = self.season()
         service_cost = self._calc_service_cost(sick)
@@ -355,17 +402,112 @@ class World:
     def _sync_population(self):
         if self.population > len(self.humans):
             for _ in range(self.population - len(self.humans)):
-                self.humans.append(Human(id=self.next_human_id, money=8, food=30))
+                self.humans.append(
+                    Human(
+                        id=self.next_human_id,
+                        money=self._starting_capital(),
+                        food=30,
+                        name=self._random_name(),
+                        age=random.randint(18, 35),
+                        drive=self._random_drive(),
+                    )
+                )
                 self.next_human_id += 1
         elif self.population < len(self.humans):
             self.humans = self.humans[: self.population]
 
-    def _sync_tents(self):
+    def _random_name(self):
+        return f"{random.choice(self._first_names)} {random.choice(self._last_names)}"
+
+    def _random_drive(self):
+        roll = random.random()
+        acc = 0.0
+        for name, weight in self._drives:
+            acc += weight
+            if roll <= acc:
+                return name
+        return "sparsam"
+
+    def _starting_capital(self):
+        base_wage = WORKPLACE_RULES["Basjobb"]["wage"]
+        return random.randint(base_wage // 2, base_wage * 3)
+
+    def _age_population(self):
+        if self.month % 12 != 0:
+            return
         for h in self.humans:
-            if h.home_kind == "Bostadslös" and random.random() < 0.1:
+            h.age = min(120, h.age + 1)
+
+    def _assign_housing(self):
+        season = self.season()
+        housing_blocks = [b for b in self.buildings if b.kind == "Bostad" and b.active]
+        humans_by_id = {h.id: h for h in self.humans}
+        slots = []
+        for b in housing_blocks:
+            if b.owner_id is None:
+                continue
+            slots.extend([b.owner_id] * 2)
+        random.shuffle(slots)
+
+        for h in self.humans:
+            if h.home_kind == "Bostadslös" and h.home_owner_id is not None:
+                h.home_owner_id = None
+
+        owners = {b.owner_id for b in housing_blocks if b.owner_id is not None}
+        for h in self.humans:
+            if h.id in owners:
+                h.home_kind = "Bostad"
+                h.home_owner_id = h.id
+                if h.id in slots:
+                    slots.remove(h.id)
+
+        candidates = [h for h in self.humans if h.home_kind != "Bostad"]
+        random.shuffle(candidates)
+        for h in candidates:
+            if not slots:
+                break
+            owner_id = slots.pop()
+            h.home_kind = "Bostad"
+            h.home_owner_id = owner_id
+
+        if season == "Vinter":
+            for h in self.humans:
+                if h.home_kind == "Tält":
+                    h.home_kind = "Bostadslös"
+                    h.home_owner_id = None
+                    h.homeless_months = 0
+
+        for h in self.humans:
+            if h.home_kind == "Bostad" and h.home_owner_id is not None and h.home_owner_id != h.id:
+                if h.money >= RENT_COST:
+                    h.money -= RENT_COST
+                    owner = humans_by_id.get(h.home_owner_id)
+                    if owner is not None:
+                        owner.money += RENT_COST
+                else:
+                    h.home_kind = "Bostadslös"
+                    h.home_owner_id = None
+                    h.homeless_months = 0
+
+        if season != "Vinter":
+            for h in self.humans:
+                if h.money <= 0 and h.home_kind != "Bostad":
+                    h.home_kind = "Tält"
+                    h.home_owner_id = None
+                    h.homeless_months = 0
+
+    def _sync_tents(self):
+        season = self.season()
+        for h in self.humans:
+            if season != "Vinter" and h.home_kind == "Bostadslös" and random.random() < 0.1:
                 h.home_kind = "Tält"
+                h.home_owner_id = None
                 h.homeless_months = 0
-        target = sum(1 for h in self.humans if h.home_kind == "Tält")
+        if season == "Vinter":
+            target = 0
+        else:
+            tents_needed = sum(1 for h in self.humans if h.home_kind == "Tält")
+            target = (tents_needed + TENT_CAPACITY - 1) // TENT_CAPACITY
         active_tents = [b for b in self.buildings if b.kind == "Tält" and b.active]
         if len(active_tents) > target:
             for b in active_tents[target:]:
@@ -401,6 +543,7 @@ class World:
         random.shuffle(candidates)
         for h in candidates[:count]:
             h.home_kind = "Bostadslös"
+            h.home_owner_id = None
             h.homeless_months = 0
 
     def _employed_count(self):
@@ -434,7 +577,7 @@ class World:
             block.color = color
             block.active = True
             block.owner_id = owner_id
-            self._mark_homeless(1)
+            self._mark_homeless(TENT_CAPACITY)
             return block, cost
         inactive = self._inactive_blocks()
         if inactive:
@@ -460,6 +603,9 @@ class World:
         return building, cost
 
     def _claim_blocks(self, kind, color, owner_id, cost_multiplier, blocks_needed):
+        blocks, total_cost = self._claim_blocks_rectangle(kind, color, owner_id, cost_multiplier, blocks_needed)
+        if blocks:
+            return blocks, total_cost
         blocks = []
         total_cost = 0
         for _ in range(blocks_needed):
@@ -478,6 +624,65 @@ class World:
                     b.color = "#6b6f7a"
             return [], 0
         return blocks, total_cost
+
+    def _claim_blocks_rectangle(self, kind, color, owner_id, cost_multiplier, blocks_needed):
+        used = {(b.x, b.y): b for b in self.buildings if b.active}
+        inactive = {(b.x, b.y): b for b in self.buildings if not b.active}
+        dims = [(w, blocks_needed // w) for w in range(1, blocks_needed + 1) if blocks_needed % w == 0]
+        random.shuffle(dims)
+        for width, height in dims:
+            max_x = self.grid_size - 2 - width
+            max_y = self.grid_size - 2 - height
+            if max_x < 2 or max_y < 2:
+                continue
+            xs = list(range(2, max_x + 1))
+            ys = list(range(2, max_y + 1))
+            random.shuffle(xs)
+            random.shuffle(ys)
+            for x in xs:
+                for y in ys:
+                    cells = [(x + dx, y + dy) for dx in range(width) for dy in range(height)]
+                    blocked = False
+                    for cell in cells:
+                        b = used.get(cell)
+                        if b is not None and b.kind != "Tält":
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
+                    total_cost = 0
+                    for cell in cells:
+                        if cell in used:
+                            block = used[cell]
+                            if block.kind == "Tält":
+                                self._mark_homeless(TENT_CAPACITY)
+                            block.kind = kind
+                            block.color = color
+                            block.active = True
+                            block.owner_id = owner_id
+                            if cost_multiplier != 0:
+                                total_cost += max(BLOCK_COST_MIN, self.block_cost) * cost_multiplier
+                            continue
+                        if cell in inactive:
+                            block = inactive[cell]
+                            block.kind = kind
+                            block.color = color
+                            block.active = True
+                            block.owner_id = owner_id
+                            if cost_multiplier == 0:
+                                total_cost += self.block_restore_cost
+                            else:
+                                total_cost += min(
+                                    self.block_restore_cost,
+                                    int(max(BLOCK_COST_MIN, self.block_cost) * cost_multiplier * 0.5),
+                                )
+                            continue
+                        cx, cy = cell
+                        self.buildings.append(Building(cx, cy, color, kind, active=True, owner_id=owner_id))
+                        if cost_multiplier != 0:
+                            total_cost += max(BLOCK_COST_MIN, self.block_cost) * cost_multiplier
+                    return cells, total_cost
+        return [], 0
 
     def _find_farm_blocks(self):
         used = {(b.x, b.y): b for b in self.buildings if b.active}
@@ -515,7 +720,7 @@ class World:
             if cell in used:
                 block = used[cell]
                 if block.kind == "Tält":
-                    self._mark_homeless(1)
+                    self._mark_homeless(TENT_CAPACITY)
                 block.kind = "Jordbruk"
                 block.color = WORKPLACE_RULES["Jordbruk"]["color"]
                 block.active = True
@@ -583,6 +788,8 @@ class World:
         for h in self.humans:
             if h.home_kind != "Tält":
                 continue
+            if h.drive == "tältliv":
+                continue
             if h.money < max(BLOCK_COST_MIN, self.block_cost):
                 continue
             if random.random() > 0.05:
@@ -595,21 +802,43 @@ class World:
             h.money -= cost
             self.money += cost
             h.home_kind = "Hydda"
+            h.home_owner_id = h.id
 
     def _spawn_new_businesses(self):
+        hungry_count = sum(1 for h in self.humans if h.hungry)
         for h in self.humans:
-            if h.job_id is not None or h.sick:
+            if h.sick:
                 continue
+            if h.hungry and h.money >= self.food_price * 5:
+                if self._create_workplace(h, "Mataffär"):
+                    continue
             roll = random.random()
-            if roll > 0.08:
+            base_chance = 0.08
+            if h.drive == "företagare":
+                base_chance = 0.16
+            elif h.drive == "risk":
+                base_chance = 0.13
+            elif h.drive == "lantbruk":
+                base_chance = 0.12
+            elif h.drive == "status":
+                base_chance = 0.09
+            elif h.drive == "sparsam":
+                base_chance = 0.04
+            if hungry_count > 0:
+                base_chance *= 1.5
+            if h.job_id is not None and h.drive not in ("företagare", "risk", "lantbruk"):
+                continue
+            if roll > base_chance:
                 continue
             if h.status_items >= WORKPLACE_RULES["Industri"]["status_req"]:
                 kind = "Industri"
             elif h.status_items >= WORKPLACE_RULES["Service"]["status_req"]:
                 kind = "Service"
             elif h.status_items >= WORKPLACE_RULES["Basjobb"]["status_req"]:
-                kind = "Basjobb"
+                kind = "Mataffär" if random.random() < 0.35 else "Basjobb"
             else:
+                kind = "Jordbruk"
+            if h.drive == "lantbruk":
                 kind = "Jordbruk"
             if kind == "Jordbruk" and h.home_kind not in ("Tält", "Hydda"):
                 continue
@@ -666,56 +895,100 @@ class World:
             w.employed = 0
         for h in self.humans:
             h.job_id = None
-
-        job_slots = []
+        humans_by_id = {h.id: h for h in self.humans}
+        owners = {}
         for w in self.workplaces:
-            job_slots.extend([w] * w.capacity)
-        random.shuffle(job_slots)
-
-        owners = {w.owner_id: w for w in self.workplaces if w.owner_id is not None}
+            if w.owner_id is None:
+                continue
+            owners.setdefault(w.owner_id, []).append(w)
         for h in self.humans:
             if h.id in owners and not h.sick:
-                w = owners[h.id]
+                owned = owners[h.id]
+                if len(owned) > 1:
+                    owned = sorted(owned, key=lambda w: w.wage, reverse=True)
+                w = owned[0]
                 h.job_id = w.id
                 w.employed += 1
-                if w in job_slots:
-                    job_slots.remove(w)
 
-        for h, w in zip([h for h in self.humans if h.job_id is None], job_slots):
-            if h.sick:
+        unemployed = [h for h in self.humans if h.job_id is None]
+        remaining_workplaces = []
+        remaining_caps = []
+        for w in self.workplaces:
+            remaining = max(0, w.capacity - w.employed)
+            if remaining > 0:
+                remaining_workplaces.append(w)
+                remaining_caps.append(remaining)
+        total_capacity = sum(remaining_caps)
+        if total_capacity > 0 and unemployed:
+            need = min(len(unemployed), total_capacity)
+            slots = random.sample(range(total_capacity), need)
+            job_slots = []
+            if len(remaining_workplaces) == 1:
+                job_slots = [remaining_workplaces[0]] * need
+            else:
+                cumulative = []
+                running = 0
+                for cap in remaining_caps:
+                    running += cap
+                    cumulative.append(running)
+                for slot in slots:
+                    idx = bisect_right(cumulative, slot)
+                    job_slots.append(remaining_workplaces[idx])
+            random.shuffle(job_slots)
+            for h, w in zip(unemployed, job_slots):
+                if h.sick:
+                    continue
+                h.job_id = w.id
+                w.employed += 1
+
+        employees_by_workplace = {}
+        for h in self.humans:
+            if h.job_id is None:
                 continue
-            h.job_id = w.id
-            w.employed += 1
+            employees_by_workplace.setdefault(h.job_id, []).append(h)
 
         for w in self.workplaces:
             if w.employed == 0:
                 w.idle_months += 1
             else:
                 w.idle_months = 0
-            wages_due = w.employed * w.wage
-            if wages_due <= 0:
-                continue
-            pay_count = w.employed
-            if w.money < wages_due:
-                pay_count = w.money // w.wage
-            paid = 0
-            for h in self.humans:
-                if h.job_id != w.id:
-                    continue
-                if paid >= pay_count:
+            employees = employees_by_workplace.get(w.id, [])
+            random.shuffle(employees)
+            wages_paid = 0
+            paid_count = 0
+            for h in employees:
+                wage = self._wage_for(h, w)
+                if w.money < wage:
                     h.job_id = None
                     continue
-                h.money += w.wage
-                paid += 1
-            w.employed = paid
-            wages_paid = paid * w.wage
-            w.money -= wages_paid
-            if w.kind != "Jordbruk":
+                w.money -= wage
+                h.money += wage
+                wages_paid += wage
+                paid_count += 1
+            w.employed = paid_count
+            if w.kind in ("Basjobb", "Service", "Industri"):
                 w.money += wages_paid * 4
+                owner = humans_by_id.get(w.owner_id)
+                if owner and wages_paid > 0:
+                    owner_share = max(10, int(wages_paid * 0.1))
+                    w.money = max(0, w.money - owner_share)
+                    owner.money += owner_share
+            elif w.kind == "Mataffär":
+                owner = humans_by_id.get(w.owner_id)
+                if owner and wages_paid > 0:
+                    owner_share = max(10, int(wages_paid * 0.1))
+                    w.money = max(0, w.money - owner_share)
+                    owner.money += owner_share
             else:
-                w.money += wages_paid * 4
+                pass
 
         self.unemployed = sum(1 for h in self.humans if h.job_id is None)
+
+    def _wage_for(self, human: Human, workplace: Workplace):
+        base = workplace.wage
+        bonus = min(300, human.status_items * 2)
+        wage = base + bonus
+        return max(20, min(1000, wage))
 
     def _apply_food(self):
         for h in self.humans:
@@ -726,43 +999,109 @@ class World:
                 h.food = 0
                 h.hungry = True
 
+        humans_by_id = {h.id: h for h in self.humans}
         farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
-        food_supply = sum(w.employed for w in farms) * FOOD_FARM_PER_EMPLOYEE_MONTH
+        stores = [w for w in self.workplaces if w.kind == "Mataffär"]
+        total_farm_employed = sum(w.employed for w in farms)
+        food_supply = total_farm_employed * FOOD_FARM_PER_EMPLOYEE_MONTH
         self.last_food_supply = food_supply
         sold = 0
 
+        for store in stores:
+            if food_supply <= 0:
+                break
+            capacity = max(0, store.capacity - store.stock_food)
+            if capacity <= 0:
+                continue
+            buy_amount = min(capacity, food_supply)
+            cost = max(1, int(buy_amount * STORE_BUY_PRICE + 0.5))
+            if store.money < cost:
+                owner = humans_by_id.get(store.owner_id)
+                if owner is not None and owner.money > 0:
+                    top_up = min(owner.money, cost - store.money)
+                    owner.money -= top_up
+                    store.money += top_up
+            if store.money < cost:
+                buy_amount = min(buy_amount, int(store.money // STORE_BUY_PRICE))
+                cost = max(1, int(buy_amount * STORE_BUY_PRICE + 0.5))
+            if buy_amount <= 0:
+                continue
+            store.money -= cost
+            store.stock_food += buy_amount
+            food_supply -= buy_amount
+            if farms and cost > 0 and total_farm_employed > 0:
+                for w in farms:
+                    share = w.employed / total_farm_employed
+                    w.money += int(cost * share)
+
+        for store in stores:
+            if store.stock_food >= store.capacity:
+                continue
+            needed = store.capacity - store.stock_food
+            cost = max(1, int(needed * STORE_BUY_PRICE + 0.5))
+            if store.money < cost:
+                owner = humans_by_id.get(store.owner_id)
+                if owner is not None and owner.money > 0:
+                    top_up = min(owner.money, cost - store.money)
+                    owner.money -= top_up
+                    store.money += top_up
+            if store.money < cost:
+                affordable = int(store.money // STORE_BUY_PRICE)
+                if affordable <= 0:
+                    continue
+                needed = affordable
+                cost = max(1, int(needed * STORE_BUY_PRICE + 0.5))
+            store.money -= cost
+            store.stock_food += needed
+
         for h in self.humans:
             if h.food >= FOOD_BUY_THRESHOLD:
-                continue
-            if food_supply <= 0:
                 continue
             if h.money < self.food_price:
                 if self._take_loan(h, self.food_price * 5):
                     h.money += self.food_price * 5
                 else:
                     continue
-            buy_amount = min(10, FOOD_MAX - h.food, food_supply)
+            buy_amount = min(10, FOOD_MAX - h.food)
             if buy_amount <= 0:
                 continue
-            cost = buy_amount * self.food_price
-            if h.money < cost:
-                buy_amount = max(0, h.money // self.food_price)
-                cost = buy_amount * self.food_price
-            if buy_amount <= 0:
-                continue
-            h.money -= cost
-            h.food += buy_amount
-            food_supply -= buy_amount
-            sold += buy_amount
+            purchase = buy_amount
+            if food_supply > 0:
+                take = min(purchase, food_supply)
+                cost = take * self.food_price
+                if h.money < cost:
+                    take = h.money // self.food_price
+                    cost = take * self.food_price
+                if take > 0:
+                    h.money -= cost
+                    h.food += take
+                    food_supply -= take
+                    sold += take
+                    purchase -= take
+                    if farms and cost > 0 and total_farm_employed > 0:
+                        for w in farms:
+                            share = w.employed / total_farm_employed
+                            w.money += int(cost * share)
+            for store in stores:
+                if purchase <= 0:
+                    break
+                if store.stock_food <= 0:
+                    continue
+                take = min(purchase, store.stock_food)
+                cost = take * self.food_price
+                if h.money < cost:
+                    take = h.money // self.food_price
+                    cost = take * self.food_price
+                if take <= 0:
+                    continue
+                h.money -= cost
+                h.food += take
+                store.stock_food -= take
+                store.money += cost
+                sold += take
+                purchase -= take
 
         self.last_food_sold = sold
-        if farms and sold > 0:
-            total_employed = sum(w.employed for w in farms)
-            if total_employed > 0:
-                revenue = sold * self.food_price
-                for w in farms:
-                    share = w.employed / total_employed
-                    w.money += int(revenue * share)
 
         for h in self.humans:
             if h.food == 0 and h.sick:
@@ -774,17 +1113,74 @@ class World:
         for h in self.humans:
             if h.home_kind == "Tält":
                 continue
+            if h.hungry:
+                continue
             if h.status_items >= 100:
                 continue
             if h.money < 10:
                 continue
-            if random.random() > 0.2:
+            chance = 0.2
+            if h.drive == "status":
+                chance = 0.5
+            elif h.drive == "sparsam":
+                chance = 0.05
+            elif h.drive == "tältliv":
+                chance = 0.1
+            if random.random() > chance:
                 continue
             h.money -= 10
             h.status_items += 1
 
+    def _apply_unemployment_support(self):
+        if not self.services.get("A-kassa", False):
+            return
+        level = self.service_funding.get("A-kassa", 0) / 100.0
+        if level <= 0:
+            return
+        base_wage = WORKPLACE_RULES["Basjobb"]["wage"]
+        payout = int(base_wage * level)
+        if payout <= 0:
+            return
+        for h in self.humans:
+            if h.job_id is None:
+                h.money += payout
+
+    def _apply_bankruptcy(self):
+        season = self.season()
+        block_value = max(BLOCK_COST_MIN, self.block_cost)
+        for h in self.humans:
+            if h.money > 0:
+                continue
+            total_sale = 0
+            for b in self.buildings:
+                if b.kind != "Bostad" or b.owner_id != h.id:
+                    continue
+                total_sale += max(1, int(block_value * 0.5))
+                b.active = False
+                b.owner_id = None
+                b.kind = "Övergiven"
+                b.color = "#6b6f7a"
+            if total_sale > 0:
+                h.money += total_sale
+            h.job_id = None
+            if season != "Vinter":
+                h.home_kind = "Tält" if random.random() < 0.7 else "Bostadslös"
+            else:
+                h.home_kind = "Bostadslös"
+            h.home_owner_id = None
+            h.homeless_months = 0
+
+    def _clamp_balances(self):
+        for h in self.humans:
+            if h.money < 0:
+                h.money = 0
+        for w in self.workplaces:
+            if w.money < 0:
+                w.money = 0
+
     def _update_health(self, hungry):
         season = self.season()
+        workplace_by_id = {w.id: w for w in self.workplaces}
         for h in self.humans:
             if h.home_kind == "Bostadslös":
                 h.homeless_months += 1
@@ -796,7 +1192,7 @@ class World:
             if season == "Vinter":
                 energy_loss += 1
             if h.job_id is not None:
-                job = next((w for w in self.workplaces if w.id == h.job_id), None)
+                job = workplace_by_id.get(h.job_id)
                 if job:
                     energy_loss += max(1, job.strain - 1)
             status_buffer = min(3, h.status_items // 10)
@@ -826,23 +1222,26 @@ class World:
         return sum(1 for h in self.humans if h.sick)
 
     def _update_building_activity(self):
+        buildings_by_owner_kind = {}
+        for b in self.buildings:
+            key = (b.owner_id, b.kind)
+            buildings_by_owner_kind.setdefault(key, []).append(b)
         for w in self.workplaces:
-            if w.employed == 0:
-                for b in self.buildings:
-                    if b.owner_id == w.owner_id and b.kind == w.kind:
-                        b.active = False
-            else:
-                for b in self.buildings:
-                    if b.owner_id == w.owner_id and b.kind == w.kind:
-                        b.active = True
+            key = (w.owner_id, w.kind)
+            targets = buildings_by_owner_kind.get(key, [])
+            if not targets:
+                continue
+            active = w.employed > 0
+            for b in targets:
+                b.active = active
 
     def _cleanup_abandoned_workplaces(self):
+        buildings_by_coord = {(b.x, b.y): b for b in self.buildings}
+        active_industry = [b for b in self.buildings if b.kind == "Industri" and b.active]
         active = []
         for w in self.workplaces:
             if w.kind == "Jordbruk":
-                for b in self.buildings:
-                    if b.kind != "Industri" or not b.active:
-                        continue
+                for b in active_industry:
                     for fx, fy in w.blocks:
                         if abs(b.x - fx) + abs(b.y - fy) <= 4:
                             w.idle_months = 6
@@ -852,12 +1251,14 @@ class World:
             if w.idle_months < 6:
                 active.append(w)
                 continue
-            for b in self.buildings:
-                if (b.x, b.y) in w.blocks:
-                    b.active = False
-                    b.owner_id = None
-                    b.kind = "Övergiven"
-                    b.color = "#6b6f7a"
+            for coord in w.blocks:
+                b = buildings_by_coord.get(coord)
+                if b is None:
+                    continue
+                b.active = False
+                b.owner_id = None
+                b.kind = "Övergiven"
+                b.color = "#6b6f7a"
         self.workplaces = active
 
     def _bank_base_rate(self):
@@ -894,6 +1295,7 @@ class World:
     def _apply_bank_interest_and_loans(self):
         if self.month % 12 != 0:
             return
+        buildings_by_coord = {(b.x, b.y): b for b in self.buildings}
         base_rate = self._bank_base_rate()
         for h in self.humans:
             if h.money > 0:
@@ -929,10 +1331,12 @@ class World:
             else:
                 w.loan_years_missed += 1
                 if w.loan_years_missed >= 3:
-                    for b in self.buildings:
-                        if (b.x, b.y) in w.blocks:
-                            b.active = False
-                            b.owner_id = None
+                    for coord in w.blocks:
+                        b = buildings_by_coord.get(coord)
+                        if b is None:
+                            continue
+                        b.active = False
+                        b.owner_id = None
                 else:
                     survivors.append(w)
         self.workplaces = survivors
@@ -945,10 +1349,12 @@ class World:
                 h.loan_years_missed = 0
                 for w in list(self.workplaces):
                     if w.owner_id == h.id:
-                        for b in self.buildings:
-                            if (b.x, b.y) in w.blocks:
-                                b.active = False
-                                b.owner_id = None
+                        for coord in w.blocks:
+                            b = buildings_by_coord.get(coord)
+                            if b is None:
+                                continue
+                            b.active = False
+                            b.owner_id = None
                         self.workplaces.remove(w)
 
     def _calc_food_status(self):
@@ -1029,7 +1435,19 @@ class World:
         world.year_expenses = data.get("year_expenses", world.year_expenses)
         world.last_year_revenue = data.get("last_year_revenue", world.last_year_revenue)
         world.last_year_expenses = data.get("last_year_expenses", world.last_year_expenses)
-        world.humans = [Human(**item) for item in data.get("humans", world.humans)]
+        humans = []
+        for item in data.get("humans", world.humans):
+            if isinstance(item, Human):
+                humans.append(item)
+                continue
+            if "name" not in item:
+                item["name"] = world._random_name()
+            if "age" not in item:
+                item["age"] = random.randint(18, 35)
+            if "drive" not in item:
+                item["drive"] = world._random_drive()
+            humans.append(Human(**item))
+        world.humans = humans
         world.workplaces = [Workplace(**item) for item in data.get("workplaces", world.workplaces)]
         world.next_human_id = data.get("next_human_id", world.next_human_id)
         world.next_workplace_id = data.get("next_workplace_id", world.next_workplace_id)

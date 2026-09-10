@@ -67,6 +67,12 @@ class App(ctk.CTk):
         self.stats_per_year = tk.BooleanVar(value=False)
         self.budget_window = None
         self._updating_budget = False
+        self.citizens_window = None
+        self.citizens_frame = None
+        self.citizen_detail = None
+        self.selected_human_id = None
+        self.citizens_page = 0
+        self._citizens_tick_counter = 0
 
         self._build_menus()
         self.bind("<Configure>", lambda _event: self._render_world())
@@ -90,10 +96,14 @@ class App(ctk.CTk):
         stats_menu = tk.Menu(menubar, tearoff=0)
         stats_menu.add_command(label="Statistik...", command=self._open_stats_window)
 
+        citizens_menu = tk.Menu(menubar, tearoff=0)
+        citizens_menu.add_command(label="Invånare...", command=self._open_citizens_window)
+
         menubar.add_cascade(label="Arkiv", menu=file_menu)
         menubar.add_cascade(label="Socialservice", menu=services_menu)
         menubar.add_cascade(label="Budget", menu=budget_menu)
         menubar.add_cascade(label="Statistik", menu=stats_menu)
+        menubar.add_cascade(label="Invånare", menu=citizens_menu)
 
         self.config(menu=menubar)
 
@@ -132,11 +142,10 @@ class App(ctk.CTk):
                 return
             config = WorldConfig(name=name, size_label=size_var.get(), region=region_var.get())
             self.world = World(config)
-            self.running = True
-            self.play_button.configure(text="❚❚")
+            self.running = False
+            self.play_button.configure(text="▶")
             self._render_world()
             self._update_status()
-            self._tick()
             dialog.destroy()
 
         def cancel():
@@ -170,6 +179,10 @@ class App(ctk.CTk):
         self._update_status()
         self._update_stats_window()
         self._update_budget_window()
+        self._citizens_tick_counter += 1
+        if self._citizens_tick_counter >= 24:
+            self._citizens_tick_counter = 0
+            self._update_citizens_window()
         tick_ms = max(200, int(BASE_TICK_MS / self.speed_multiplier))
         self.after(tick_ms, self._tick)
 
@@ -221,12 +234,11 @@ class App(ctk.CTk):
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
         self.world = World.from_dict(data)
-        self.running = True
-        self.play_button.configure(text="❚❚")
+        self.running = False
+        self.play_button.configure(text="▶")
         self._render_world()
         self._update_status()
         self._update_stats_window()
-        self._tick()
 
     def _open_tax_settings(self):
         if not self.world:
@@ -318,6 +330,134 @@ class App(ctk.CTk):
         self.stats_canvas.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
 
         self._update_stats_window()
+
+    def _open_citizens_window(self):
+        if not self.world:
+            messagebox.showinfo("Ingen värld", "Skapa eller ladda en värld först.")
+            return
+        if self.citizens_window and self.citizens_window.winfo_exists():
+            self.citizens_window.lift()
+            self._update_citizens_window()
+            return
+        window = ctk.CTkToplevel(self)
+        window.title("Invånare")
+        window.geometry("620x480")
+        window.transient(self)
+        self.citizens_window = window
+
+        layout = ctk.CTkFrame(window, fg_color="transparent")
+        layout.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        layout.grid_columnconfigure(0, weight=1)
+        layout.grid_columnconfigure(1, weight=1)
+
+        self.citizens_frame = ctk.CTkScrollableFrame(layout, fg_color="transparent")
+        self.citizens_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.citizen_detail = ctk.CTkLabel(layout, text="", anchor="w", justify="left")
+        self.citizen_detail.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.pack(fill=tk.X, padx=16, pady=(0, 12))
+        ctk.CTkButton(controls, text="◀", width=40, command=self._prev_citizens_page).pack(side=tk.LEFT)
+        ctk.CTkButton(controls, text="▶", width=40, command=self._next_citizens_page).pack(side=tk.LEFT, padx=(8, 0))
+
+        self._update_citizens_window()
+
+    def _energy_color(self, energy):
+        ratio = max(0.0, min(1.0, energy / 100))
+        red = int(255 * (1 - ratio))
+        green = int(255 * ratio)
+        return f"#{red:02x}{green:02x}00"
+
+    def _select_citizen(self, human_id):
+        self.selected_human_id = human_id
+        self._update_citizens_window()
+
+    def _prev_citizens_page(self):
+        if self.citizens_page > 0:
+            self.citizens_page -= 1
+            self._update_citizens_window()
+
+    def _next_citizens_page(self):
+        if not self.world:
+            return
+        max_page = max(0, (len(self.world.humans) - 1) // 10)
+        if self.citizens_page < max_page:
+            self.citizens_page += 1
+            self._update_citizens_window()
+
+    def _update_citizens_window(self):
+        if not self.world or not self.citizens_window or not self.citizens_window.winfo_exists():
+            return
+        if not self.citizens_frame or not self.citizen_detail:
+            return
+
+        for child in self.citizens_frame.winfo_children():
+            child.destroy()
+
+        selected = None
+        start = self.citizens_page * 10
+        end = start + 10
+        for h in self.world.humans[start:end]:
+            row = ctk.CTkFrame(self.citizens_frame, fg_color="transparent")
+            row.pack(fill=tk.X, pady=2)
+
+            dot = tk.Canvas(row, width=12, height=12, highlightthickness=0, bg="#0f1115")
+            dot.pack(side=tk.LEFT, padx=(0, 6))
+            color = self._energy_color(h.energy)
+            dot.create_oval(2, 2, 10, 10, fill=color, outline="")
+
+            name_btn = ctk.CTkButton(
+                row,
+                text=h.name,
+                width=140,
+                command=lambda hid=h.id: self._select_citizen(hid),
+            )
+            name_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+            status = "Sjuk" if h.sick else "Hungrig" if h.hungry else "Ok"
+            ctk.CTkLabel(row, text=f"{status} | {h.money} SM").pack(side=tk.LEFT)
+
+            if self.selected_human_id == h.id:
+                selected = h
+
+        if selected is None and self.world.humans:
+            selected = self.world.humans[0]
+            self.selected_human_id = selected.id
+
+        if selected:
+            owned_housing = sum(1 for b in self.world.buildings if b.kind == "Bostad" and b.owner_id == selected.id)
+            owned_businesses = sum(1 for w in self.world.workplaces if w.owner_id == selected.id)
+            employees = sum(w.employed for w in self.world.workplaces if w.owner_id == selected.id)
+            tenants = sum(
+                1
+                for h in self.world.humans
+                if h.home_kind == "Bostad" and h.home_owner_id == selected.id and h.id != selected.id
+            )
+            renting = (
+                selected.home_kind == "Bostad"
+                and selected.home_owner_id is not None
+                and selected.home_owner_id != selected.id
+            )
+            detail = (
+                f"Namn: {selected.name}\n"
+                f"Ålder: {selected.age}\n"
+                f"Pengar: {selected.money} SM\n"
+                f"Mat: {selected.food}\n"
+                f"Energi: {selected.energy}\n"
+                f"Hälsa: {selected.health}\n"
+                f"Sjuk: {'Ja' if selected.sick else 'Nej'}\n"
+                f"Hungrig: {'Ja' if selected.hungry else 'Nej'}\n"
+                f"Statusprylar: {selected.status_items}\n"
+                f"Lån: {selected.loan_balance}\n"
+                f"Boende: {selected.home_kind}\n"
+                f"Hyr: {'Ja' if renting else 'Nej'}\n"
+                f"Ägda bostäder: {owned_housing}\n"
+                f"Ägda företag: {owned_businesses}\n"
+                f"Anställda: {employees}\n"
+                f"Hyresgäster: {tenants}\n"
+                f"Jobb ID: {selected.job_id if selected.job_id is not None else '-'}\n"
+            )
+            self.citizen_detail.configure(text=detail)
 
     def _update_stats_window(self):
         if not self.world or not self.stats_window or not self.stats_window.winfo_exists():
