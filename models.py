@@ -137,3 +137,16 @@ class ServiceState:
     effectiveness: float = 0.0
     workload: float = 0.0
 
+
+@dataclass
+class MarketState:
+    food_price: int = 2
+    room_rent: int = 6
+    apartment_rent: int = 8
+    hotel_rate: int = 10
+    wage_index: float = 1.0
+    construction_index: float = 1.0
+    food_pressure: float = 1.0
+    housing_pressure: float = 1.0
+    labour_pressure: float = 1.0
+

@@ -138,6 +138,20 @@ saknar en lokal leverantör redovisas som externa utflöden. Budget- och
 statistikvyerna visar total penningmängd, extern balans och eventuell
 bokföringsavvikelse. Avvikelsen ska alltid vara exakt `0 SM`.
 
+### Lokal prisbildning
+
+Matpris, rumshyra, lägenhetshyra, hotellpris, lönenivå och byggkostnadsnivå
+förändras över tid. Matpriset reagerar på faktisk produktion och gårdslager,
+boendepriser på bostadssökande och lediga platser, löner på konkurrensen om
+arbetskraft och byggkostnader på både bostads- och arbetsmarknadens tryck.
+Priserna rör sig gradvis för att en enskild månad inte ska skapa extrema hopp.
+
+De aktuella priserna används i riktiga köp, hyror, löner, A-kassa,
+företagsetableringar och privata samt kommunala byggprojekt. Höga matpriser gör
+jordbruk mer attraktivt, höga hyror stärker bostadsincitamentet och dyrare
+byggande bromsar nya projekt. Kommunens blockpris är fortfarande ett separat
+politiskt styrmedel och multipliceras med den lokala byggkostnadsnivån.
+
 ### Bostäder
 
 Tält är tillfälliga och ger framför allt vintertid sämre energi och hälsa.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 
-from models import Building, CentralBank, Human, ServiceState, Transaction, Workplace, WorldConfig
+from models import Building, CentralBank, Human, MarketState, ServiceState, Transaction, Workplace, WorldConfig
 
 SIZE_MAP = {"Liten": 30, "Medium": 60, "Stor": 100}
 REGIONS = ["Norra", "Medel", "Syd"]
@@ -93,6 +93,7 @@ class World:
         self.central_bank = CentralBank()
         self.expenses, self.tax_rate = 0, 0.01
         self.block_cost, self.block_restore_cost, self.food_price = 8, 20, FOOD_PRICE
+        self.market = MarketState()
         self.month, self.unemployed = 0, self.population
         self.next_human_id = self.next_workplace_id = 1
         names = ("Polis", "Brandkår", "Sjukvård", "Skola", "Barnomsorg", "A-kassa")
@@ -115,6 +116,8 @@ class World:
             "service_coverage", "service_effectiveness",
             "healthcare_treated", "crime_victims", "fire_incidents",
             "students_supported", "childcare_supported",
+            "food_price", "room_rent", "apartment_rent", "hotel_rate",
+            "wage_index", "construction_index",
         )
         self.history, self.history_year = {k: [] for k in keys}, {k: [] for k in keys}
         self.last_revenue = self.last_hungry = self.last_sick = self.last_unemployed = 0
@@ -188,6 +191,7 @@ class World:
         self.central_bank.last_interest_income = 0
         for name, funding in self.service_funding.items():
             if funding > 0: self.services[name] = True
+        self._update_market_prices()
         self.last_development_revenue = 0
         self.last_public_investment = 0
         self.last_public_payroll = 0
@@ -246,6 +250,12 @@ class World:
             "fire_incidents": self.last_fire_incidents,
             "students_supported": self.last_students_supported,
             "childcare_supported": self.last_childcare_supported,
+            "food_price": self.market.food_price,
+            "room_rent": self.market.room_rent,
+            "apartment_rent": self.market.apartment_rent,
+            "hotel_rate": self.market.hotel_rate,
+            "wage_index": round(self.market.wage_index*100, 1),
+            "construction_index": round(self.market.construction_index*100, 1),
             "hotel_guests": snapshot["hotel_guests"],
             "hotel_rooms": snapshot["hotel_rooms"],
         }
@@ -431,6 +441,70 @@ class World:
         self.population = len(self.humans)
 
     # Demand is calculated before anyone chooses a business.
+    @staticmethod
+    def _step_price(current, target):
+        if target > current:
+            return current+1
+        if target < current:
+            return current-1
+        return current
+
+    def _update_market_prices(self):
+        if not self.humans:
+            self.market.food_pressure = self.market.housing_pressure = self.market.labour_pressure = 1.0
+            self.market.food_price = self._step_price(self.market.food_price, FOOD_PRICE)
+            self.market.room_rent = self._step_price(self.market.room_rent, RENT_COST)
+            self.market.apartment_rent = self._step_price(self.market.apartment_rent, APARTMENT_RENT)
+            self.market.hotel_rate = self._step_price(self.market.hotel_rate, HOTEL_RENT)
+            self.market.wage_index += (1-self.market.wage_index)*.15
+            self.market.construction_index += (1-self.market.construction_index)*.12
+            self.food_price = self.market.food_price
+            return
+        people = max(1, len(self.humans))
+        farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
+        food_supply = (sum(w.stock_food for w in farms)
+                       +sum(w.employed*FOOD_FARM_PER_EMPLOYEE_MONTH for w in farms))
+        food_need = people*FOOD_MONTHLY_NEED
+        food_pressure = min(3.0, food_need/max(1, food_supply))
+
+        permanent_capacity = self._housing_capacity()
+        permanent_occupants = sum(h.home_kind in PERMANENT_HOME_KINDS for h in self.humans)
+        housing_seekers = sum(h.home_kind in ("Tält", "Bostadslös", "Hotell") for h in self.humans)
+        housing_pressure = min(3.0, (permanent_occupants+housing_seekers)/max(1, permanent_capacity))
+
+        labour_force = max(1, sum(not h.retired for h in self.humans))
+        vacancies = max(0, sum(w.capacity for w in self.workplaces)-self._employed_count())
+        unemployment = sum(not h.retired and h.job_id is None for h in self.humans)
+        labour_pressure = max(.5, min(2.0, 1+(vacancies-unemployment)/labour_force))
+
+        self.market.food_pressure = food_pressure
+        self.market.housing_pressure = housing_pressure
+        self.market.labour_pressure = labour_pressure
+        food_target = round(FOOD_PRICE*max(.7, min(2.5, .65+.5*food_pressure)))
+        room_target = round(RENT_COST*max(.7, min(1.8, .75+.35*housing_pressure)))
+        apartment_target = round(APARTMENT_RENT*max(.7, min(1.7, .78+.30*housing_pressure)))
+        rooms = self._temporary_housing_capacity()
+        guests = sum(h.home_kind == "Hotell" for h in self.humans)
+        hotel_pressure = (guests+self.last_arrivals+1)/max(1, rooms) if rooms else 1
+        hotel_target = round(HOTEL_RENT*max(.75, min(1.8, .9+.35*hotel_pressure)))
+
+        self.market.food_price = max(1, self._step_price(self.market.food_price, food_target))
+        self.market.room_rent = max(1, self._step_price(self.market.room_rent, room_target))
+        self.market.apartment_rent = max(1, self._step_price(self.market.apartment_rent, apartment_target))
+        self.market.hotel_rate = max(1, self._step_price(self.market.hotel_rate, hotel_target))
+        wage_target = max(.85, min(1.30, .85+.20*labour_pressure))
+        construction_target = max(.80, min(1.55,
+            .75+.28*housing_pressure+.12*labour_pressure))
+        self.market.wage_index += (wage_target-self.market.wage_index)*.15
+        self.market.construction_index += (construction_target-self.market.construction_index)*.12
+        self.food_price = self.market.food_price  # compatibility for older UI/extensions
+
+    def _house_build_cost(self):
+        return max(1, round(HOUSE_BUILD_COST*self.market.construction_index))
+
+    def _house_expansion_cost(self):
+        return max(1, round(HOUSE_EXPANSION_COST*self.market.construction_index))
+
     def _market_signals(self):
         people = max(1, len(self.humans))
         farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
@@ -448,14 +522,17 @@ class World:
                           if b.active and b.kind == "Hotell")
         desired_hotel_rooms = temporary_need+self.last_arrivals*3+people//25
         return {
-            "Jordbruk": food_gap * 12,
-            "Mataffär": max(0, people / 60 - sum(w.kind == "Mataffär" for w in self.workplaces)) * (1+wealth/100),
+            "Jordbruk": food_gap*12*math.sqrt(self.market.food_price/FOOD_PRICE),
+            "Mataffär": (max(0, people / 60-sum(w.kind == "Mataffär" for w in self.workplaces))
+                          *(1+wealth/100)*math.sqrt(self.market.food_price/FOOD_PRICE)),
             "Basjobb": max(0, people-jobs) / people * 3,
             "Service": max(0, people/35-sum(w.kind == "Service" for w in self.workplaces)) * wealth/45,
-            "Hotell": max(0, (desired_hotel_rooms-hotel_rooms)/max(4, people/20))*(1+wealth/100),
+            "Hotell": (max(0, (desired_hotel_rooms-hotel_rooms)/max(4, people/20))
+                        *(1+wealth/100)*self.market.hotel_rate/HOTEL_RENT),
             "Industri": (max(0, people/45-sum(w.kind == "Industri" for w in self.workplaces))
                           *max(0, min(2, (wealth-45)/55))) if food_gap < .15 else 0,
-            "Bostad": tents/people * wealth/30,
+            "Bostad": (tents/people*wealth/30*self.market.room_rent/RENT_COST
+                        /max(.75, self.market.construction_index)),
         }
 
     def _preference(self, h, kind):
@@ -497,7 +574,8 @@ class World:
     def _create_workplace(self, owner, kind, demand_score=1):
         rules = WORKPLACE_RULES[kind]
         count = rules.get("blocks", rules.get("blocks_min", self._rng.choice(rules.get("blocks_choices", [1]))))
-        cost = count * self.block_cost * rules["block_cost_multiplier"]
+        cost = round(count*self.block_cost*rules["block_cost_multiplier"]
+                     *self.market.construction_index)
         if cost > owner.money and kind != "Jordbruk": return False
         blocks = (self._claim_farmland(owner.id) if kind == "Jordbruk"
                   else self._claim_near_activity(kind, rules["color"], owner.id, count))
@@ -515,14 +593,15 @@ class World:
         self.last_development_revenue += cost
         divisor = 3 if kind == "Jordbruk" else 6
         capacity = min(rules["capacity_max"], max(rules["capacity_min"], math.ceil(len(self.humans)/divisor)))
-        seed = min(owner.money, rules["wage"]*max(1, capacity))
+        market_wage = max(1, round(rules["wage"]*self.market.wage_index))
+        seed = min(owner.money, market_wage*max(1, capacity))
         owner.money -= seed
         self._record_transaction("Företagskapital", seed, "Invånare", owner.id,
                                  "Företag", self.next_workplace_id, kind)
         workplace = Workplace(self.next_workplace_id, kind, rules["wage"], capacity,
             strain=rules["strain"], owner_id=owner.id, money=seed, blocks=blocks, demand_score=demand_score)
         self.workplaces.append(workplace)
-        working_capital = rules["wage"]*min(3, capacity)*3
+        working_capital = market_wage*min(3, capacity)*3
         if kind != "Jordbruk" and workplace.money < working_capital:
             self._take_loan(workplace, working_capital-workplace.money)
         if kind == "Hotell":
@@ -741,10 +820,11 @@ class World:
         self.unemployed = sum(not h.retired and h.id not in employed for h in self.humans)
 
     def _wage_for(self, human, workplace):
+        base_wage = max(1, round(workplace.wage*self.market.wage_index))
         if workplace.service_name:
-            return workplace.wage+min(5, int(human.education_level//20))
+            return base_wage+min(5, int(human.education_level//20))
         skill_bonus = min(5, int(human.education_level//20)) if workplace.kind in ("Service", "Industri") else 0
-        return max(20, min(1000, workplace.wage+skill_bonus+min(100, human.status_items*2)))
+        return max(20, min(1000, base_wage+skill_bonus+min(100, human.status_items*2)))
 
     def _can_commute(self, human, workplace):
         if workplace.kind == "Jordbruk" and workplace.owner_id == human.id: return True
@@ -893,6 +973,8 @@ class World:
 
     def _evaluate_housing_market(self):
         signals = self._market_signals()
+        build_cost = self._house_build_cost()
+        expansion_cost = self._house_expansion_cost()
         needy = [h for h in self.humans if h.home_kind in ("Tält", "Bostadslös")]
         # Empty homes do not create demand for another building. Residents who
         # cannot pay rent are a poverty/service problem, not a capacity shortage.
@@ -904,7 +986,7 @@ class World:
                 homes_by_owner.setdefault(building.owner_id, []).append(building)
 
         expansion_ready = any(
-            owner.money >= HOUSE_EXPANSION_COST+HOUSING_BUFFER
+            owner.money >= expansion_cost+HOUSING_BUFFER
             and self.month-owner.last_housing_investment_month >= 18
             and any(home.level < HOUSE_MAX_LEVEL for home in homes_by_owner.get(owner.id, []))
             for owner in self.humans
@@ -914,7 +996,7 @@ class World:
         # every solvent resident can eventually choose to build.
         builders = [h for h in self.humans if h.id not in homes_by_owner
                     and capacity_shortage
-                    and h.money >= HOUSE_BUILD_COST+HOUSING_BUFFER
+                    and h.money >= build_cost+HOUSING_BUFFER
                     and self.month-h.last_housing_investment_month >= 12
                     and not (self.month % 4 == 0 and expansion_ready)]
         if builders:
@@ -926,13 +1008,13 @@ class World:
                 building.housing_type = ("Gård" if any(w.kind == "Jordbruk" and w.owner_id == buyer.id
                                                         for w in self.workplaces) else "Hydda")
                 building.construction_month = self.month
-                buyer.money -= HOUSE_BUILD_COST
-                self.money += HOUSE_BUILD_COST
-                self._record_transaction("Bostadsbyggande", HOUSE_BUILD_COST, "Invånare", buyer.id,
+                buyer.money -= build_cost
+                self.money += build_cost
+                self._record_transaction("Bostadsbyggande", build_cost, "Invånare", buyer.id,
                                          "Kommun", None, "Nytt småhus")
-                self._record_purchase(buyer, "Boende", "Byggde eget hus", HOUSE_BUILD_COST)
+                self._record_purchase(buyer, "Boende", "Byggde eget hus", build_cost)
                 buyer.last_housing_investment_month = self.month
-                self.last_development_revenue += HOUSE_BUILD_COST
+                self.last_development_revenue += build_cost
                 return
 
         # Existing owners prefer extending a lived-in home to endlessly placing
@@ -941,7 +1023,7 @@ class World:
         for owner_id, homes in homes_by_owner.items():
             owner = next((h for h in self.humans if h.id == owner_id), None)
             expandable = next((b for b in homes if b.level < HOUSE_MAX_LEVEL), None)
-            if (owner and expandable and owner.money >= HOUSE_EXPANSION_COST+HOUSING_BUFFER
+            if (owner and expandable and owner.money >= expansion_cost+HOUSING_BUFFER
                     and self.month-owner.last_housing_investment_month >= 18):
                 extensions.append((owner.housing_ambition+owner.money/300, owner, expandable))
         if extensions:
@@ -951,13 +1033,13 @@ class World:
             building.housing_units = old_capacity+2
             if building.housing_type != "Gård":
                 building.housing_type = self._home_type(building)
-            owner.money -= HOUSE_EXPANSION_COST
-            self.money += HOUSE_EXPANSION_COST
-            self._record_transaction("Bostadsbyggande", HOUSE_EXPANSION_COST, "Invånare", owner.id,
+            owner.money -= expansion_cost
+            self.money += expansion_cost
+            self._record_transaction("Bostadsbyggande", expansion_cost, "Invånare", owner.id,
                                      "Kommun", None, f"Utbyggnad nivå {building.level}")
-            self._record_purchase(owner, "Boende", f"Byggde ut till nivå {building.level}", HOUSE_EXPANSION_COST)
+            self._record_purchase(owner, "Boende", f"Byggde ut till nivå {building.level}", expansion_cost)
             owner.last_housing_investment_month = self.month
-            self.last_development_revenue += HOUSE_EXPANSION_COST
+            self.last_development_revenue += expansion_cost
 
     def _maybe_upgrade_housing(self):
         self._evaluate_housing_market()
@@ -980,7 +1062,10 @@ class World:
                 home_type = self._home_type(owned_houses[0])
                 owner.home_kind = home_type; owner.home_owner_id = owner_id
                 owner.home_x, owner.home_y = owned_houses[0].x, owned_houses[0].y
-        renters = [h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS and h.money >= RENT_COST]
+        room_rent = self.market.room_rent
+        apartment_rent = self.market.apartment_rent
+        hotel_rate = self.market.hotel_rate
+        renters = [h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS and h.money >= room_rent]
         renter_index = 0
         for owner_id, owned_houses in houses_by_owner.items():
             owner = people.get(owner_id)
@@ -989,15 +1074,15 @@ class World:
                 for _ in range(slots):
                     if renter_index >= len(renters): break
                     tenant = renters[renter_index]; renter_index += 1
-                    tenant.money -= RENT_COST
-                    tenant.last_living_cost += RENT_COST
-                    self._record_purchase(tenant, "Boende", "Rumshyra", RENT_COST)
+                    tenant.money -= room_rent
+                    tenant.last_living_cost += room_rent
+                    self._record_purchase(tenant, "Boende", "Rumshyra", room_rent)
                     if owner:
-                        owner.money += RENT_COST
-                        self._record_transaction("Privathyra", RENT_COST, "Invånare", tenant.id,
+                        owner.money += room_rent
+                        self._record_transaction("Privathyra", room_rent, "Invånare", tenant.id,
                                                  "Invånare", owner.id, self._home_type(house))
                     else:
-                        self._record_transaction("Privathyra", RENT_COST, "Invånare", tenant.id,
+                        self._record_transaction("Privathyra", room_rent, "Invånare", tenant.id,
                                                  "Extern", None, "Ägare saknas")
                     tenant.home_kind = self._home_type(house); tenant.home_owner_id = owner_id
                     tenant.home_x, tenant.home_y = house.x, house.y
@@ -1005,33 +1090,33 @@ class World:
             for _ in range(apartment.housing_units or APARTMENT_CAPACITY):
                 if renter_index >= len(renters): break
                 tenant = renters[renter_index]; renter_index += 1
-                tenant.money -= APARTMENT_RENT; tenant.last_living_cost += APARTMENT_RENT
-                self._record_purchase(tenant, "Boende", "Lägenhetshyra", APARTMENT_RENT)
-                self.money += APARTMENT_RENT
-                self._record_transaction("Kommunal hyra", APARTMENT_RENT, "Invånare", tenant.id,
+                tenant.money -= apartment_rent; tenant.last_living_cost += apartment_rent
+                self._record_purchase(tenant, "Boende", "Lägenhetshyra", apartment_rent)
+                self.money += apartment_rent
+                self._record_transaction("Kommunal hyra", apartment_rent, "Invånare", tenant.id,
                                          "Kommun", None, "Lägenhet")
                 tenant.home_kind = "Lägenhet"; tenant.home_owner_id = 0
                 tenant.home_x, tenant.home_y = apartment.x, apartment.y
 
         hotel_by_coordinate = {coordinate: workplace for workplace in self.workplaces
                                if workplace.kind == "Hotell" for coordinate in workplace.blocks}
-        guests = [h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS and h.money >= HOTEL_RENT]
+        guests = [h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS and h.money >= hotel_rate]
         guest_index = 0
         for hotel in hotels:
             for _ in range(hotel.housing_units or HOTEL_ROOMS_PER_BLOCK):
                 if guest_index >= len(guests): break
                 guest = guests[guest_index]; guest_index += 1
-                guest.money -= HOTEL_RENT
-                guest.last_living_cost += HOTEL_RENT
-                self._record_purchase(guest, "Boende", "Hotellnatt", HOTEL_RENT)
+                guest.money -= hotel_rate
+                guest.last_living_cost += hotel_rate
+                self._record_purchase(guest, "Boende", "Hotellnatt", hotel_rate)
                 business = hotel_by_coordinate.get((hotel.x, hotel.y))
                 if business:
-                    business.money += HOTEL_RENT
-                    business.monthly_profit += HOTEL_RENT
-                    self._record_transaction("Hotell", HOTEL_RENT, "Invånare", guest.id,
+                    business.money += hotel_rate
+                    business.monthly_profit += hotel_rate
+                    self._record_transaction("Hotell", hotel_rate, "Invånare", guest.id,
                                              "Företag", business.id, "Övernattning")
                 else:
-                    self._record_transaction("Hotell", HOTEL_RENT, "Invånare", guest.id,
+                    self._record_transaction("Hotell", hotel_rate, "Invånare", guest.id,
                                              "Extern", None, "Verksamhet saknas")
                 guest.home_kind = "Hotell"; guest.home_owner_id = hotel.owner_id
                 guest.home_x, guest.home_y = hotel.x, hotel.y
@@ -1199,6 +1284,7 @@ class World:
         self.population = len(self.humans)
 
     def _house_newcomers_in_hotels(self, newcomers):
+        hotel_rate = self.market.hotel_rate
         hotels = [b for b in self.buildings if b.active and b.kind == "Hotell"]
         occupied = {(b.x, b.y): sum(h.home_kind == "Hotell" and h.home_x == b.x and h.home_y == b.y
                                     for h in self.humans) for b in hotels}
@@ -1206,19 +1292,19 @@ class World:
                       if workplace.kind == "Hotell" for coordinate in workplace.blocks}
         for newcomer in newcomers:
             hotel = next((b for b in hotels if occupied[(b.x, b.y)] <
-                          (b.housing_units or HOTEL_ROOMS_PER_BLOCK) and newcomer.money >= HOTEL_RENT), None)
+                          (b.housing_units or HOTEL_ROOMS_PER_BLOCK) and newcomer.money >= hotel_rate), None)
             if hotel is None: continue
-            newcomer.money -= HOTEL_RENT
-            newcomer.last_living_cost += HOTEL_RENT
-            self._record_purchase(newcomer, "Boende", "Första hotellnatten", HOTEL_RENT)
+            newcomer.money -= hotel_rate
+            newcomer.last_living_cost += hotel_rate
+            self._record_purchase(newcomer, "Boende", "Första hotellnatten", hotel_rate)
             business = businesses.get((hotel.x, hotel.y))
             if business:
-                business.money += HOTEL_RENT
-                business.monthly_profit += HOTEL_RENT
-                self._record_transaction("Hotell", HOTEL_RENT, "Invånare", newcomer.id,
+                business.money += hotel_rate
+                business.monthly_profit += hotel_rate
+                self._record_transaction("Hotell", hotel_rate, "Invånare", newcomer.id,
                                          "Företag", business.id, "Första övernattning")
             else:
-                self._record_transaction("Hotell", HOTEL_RENT, "Invånare", newcomer.id,
+                self._record_transaction("Hotell", hotel_rate, "Invånare", newcomer.id,
                                          "Extern", None, "Verksamhet saknas")
             newcomer.home_kind = "Hotell"; newcomer.home_owner_id = hotel.owner_id
             newcomer.home_x, newcomer.home_y = hotel.x, hotel.y
@@ -1272,7 +1358,8 @@ class World:
 
     def budget_snapshot(self):
         people = len(self.humans)
-        payroll_month = sum(WORKPLACE_RULES[w.kind]["wage"]*w.employed for w in self.workplaces)
+        payroll_month = sum(round(WORKPLACE_RULES[w.kind]["wage"]*self.market.wage_index)*w.employed
+                            for w in self.workplaces)
         base_month = int(people*.4*self.budget_allocations["Basutgifter"]/100)
         service_items = {}
         service_month = 0
@@ -1288,9 +1375,9 @@ class World:
             )
             processable = min(self.unemployed, jobs*30)
             replacement = .25+.55*funding/100
-            transfer = (int(WORKPLACE_RULES["Basjobb"]["wage"]*replacement)*processable
+            transfer = (int(round(WORKPLACE_RULES["Basjobb"]["wage"]*self.market.wage_index)*replacement)*processable
                         if name == "A-kassa" and enabled else 0)
-            payroll = jobs*WORKPLACE_RULES["Service"]["wage"]
+            payroll = jobs*round(WORKPLACE_RULES["Service"]["wage"]*self.market.wage_index)
             state = self.service_states[name]
             service_items[name] = {"enabled": enabled, "funding": funding,
                                    "administration": administration, "transfer": transfer,
@@ -1352,7 +1439,7 @@ class World:
         processable = min(len(unemployed), int(state.staffed*30*state.supply_ratio*state.access_ratio))
         if processable <= 0: return
         replacement = .25+.55*self.service_funding["A-kassa"]/100
-        requested = int(WORKPLACE_RULES["Basjobb"]["wage"]*replacement)
+        requested = int(round(WORKPLACE_RULES["Basjobb"]["wage"]*self.market.wage_index)*replacement)
         if requested <= 0: return
         recipients = sorted(
             unemployed,
@@ -1644,6 +1731,9 @@ class World:
         self.workplaces = [w for w in self.workplaces if not w.service_name or w.service_name in active_names]
 
     def _develop_civic_center(self):
+        service_build_cost = max(1, round(SERVICE_BUILD_COST*self.market.construction_index))
+        conversion_cost = max(1, service_build_cost//3)
+        civic_block_cost = max(1, round(CIVIC_BLOCK_COST*self.market.construction_index))
         active_services = [name for name, enabled in self.services.items()
                            if enabled and self.service_funding.get(name, 0) > 0]
         service_kinds = set(SERVICE_COLORS)
@@ -1657,49 +1747,50 @@ class World:
             convertible = next((b for b in self.buildings
                 if b.active and b.kind == "Flerfamiljshus"
                 and self._housing_capacity()-(b.housing_units or APARTMENT_CAPACITY) >= len(self.humans)), None)
-            if convertible is not None and self.money >= SERVICE_BUILD_COST//3:
-                self.money -= SERVICE_BUILD_COST//3
-                self._record_transaction("Kommunal investering", SERVICE_BUILD_COST//3,
+            if convertible is not None and self.money >= conversion_cost:
+                self.money -= conversion_cost
+                self._record_transaction("Kommunal investering", conversion_cost,
                                          "Kommun", None, "Extern", None, f"Konvertering till {name}")
-                self.last_public_investment += SERVICE_BUILD_COST//3
+                self.last_public_investment += conversion_cost
                 convertible.kind, convertible.color = name, SERVICE_COLORS[name]
                 convertible.housing_units, convertible.service_name = 0, name
                 existing_services.append(convertible)
                 continue
-            if self.money < SERVICE_BUILD_COST: continue
+            if self.money < service_build_cost: continue
             building = self._claim_central_building(name, SERVICE_COLORS[name])
             if building:
                 building.service_name = name; building.construction_month = self.month
-                self.money -= SERVICE_BUILD_COST
-                self._record_transaction("Kommunal investering", SERVICE_BUILD_COST,
+                self.money -= service_build_cost
+                self._record_transaction("Kommunal investering", service_build_cost,
                                          "Kommun", None, "Extern", None, name)
-                self.last_public_investment += SERVICE_BUILD_COST
+                self.last_public_investment += service_build_cost
                 existing_services.append(building)
 
         # Service buildings pull additional mixed-use centre blocks around them.
         target = len(existing_services)+len(self.humans)//75
         current = sum(b.active and b.kind == "Centrum" for b in self.buildings)
-        if current < target and self.money >= CIVIC_BLOCK_COST:
+        if current < target and self.money >= civic_block_cost:
             if self._claim_central_building("Centrum", "#c45a55"):
-                self.money -= CIVIC_BLOCK_COST
-                self._record_transaction("Kommunal investering", CIVIC_BLOCK_COST,
+                self.money -= civic_block_cost
+                self._record_transaction("Kommunal investering", civic_block_cost,
                                          "Kommun", None, "Extern", None, "Centrum")
-                self.last_public_investment += CIVIC_BLOCK_COST
+                self.last_public_investment += civic_block_cost
 
     def _develop_apartment_housing(self):
+        apartment_build_cost = max(1, round(APARTMENT_BUILD_COST*self.market.construction_index))
         shortage = len(self.humans)-self._housing_capacity()
         civic_exists = any(b.active and (b.kind == "Centrum" or b.kind in SERVICE_COLORS)
                            for b in self.buildings)
-        if len(self.humans) < 35 or shortage < 1 or not civic_exists or self.money < APARTMENT_BUILD_COST:
+        if len(self.humans) < 35 or shortage < 1 or not civic_exists or self.money < apartment_build_cost:
             return
         building = self._claim_central_building("Flerfamiljshus", "#8b78a8")
         if building:
             building.housing_units = APARTMENT_CAPACITY
             building.construction_month = self.month
-            self.money -= APARTMENT_BUILD_COST
-            self._record_transaction("Kommunal investering", APARTMENT_BUILD_COST,
+            self.money -= apartment_build_cost
+            self._record_transaction("Kommunal investering", apartment_build_cost,
                                      "Kommun", None, "Extern", None, "Flerfamiljshus")
-            self.last_public_investment += APARTMENT_BUILD_COST
+            self.last_public_investment += apartment_build_cost
 
     def _claim_central_building(self, kind, color):
         used = {(b.x, b.y) for b in self.buildings if b.active}
@@ -1777,6 +1868,7 @@ class World:
                     workplaces=[w.__dict__ for w in self.workplaces],
                     service_states={name: state.__dict__ for name, state in self.service_states.items()},
                     last_service_operating_paid=self.last_service_operating_paid,
+                    market=self.market.__dict__,
                     central_bank=self.central_bank.__dict__,
                     transactions=[t.__dict__ for t in self.transactions])
         return data
@@ -1784,7 +1876,7 @@ class World:
     @staticmethod
     def from_dict(data):
         world = World(WorldConfig(data.get("name", "Ny värld"), data.get("size_label", "Medium"), data.get("region", "Medel")))
-        skip = {"buildings", "humans", "workplaces", "central_bank", "transactions", "service_states",
+        skip = {"buildings", "humans", "workplaces", "central_bank", "transactions", "service_states", "market",
                 "name", "size_label", "region"}
         for key, value in data.items():
             if key not in skip and hasattr(world, key): setattr(world, key, value)
@@ -1799,6 +1891,14 @@ class World:
                 world.service_states[name] = ServiceState(**{
                     k: v for k, v in row.items() if k in ServiceState.__dataclass_fields__
                 })
+        market_data = data.get("market", {})
+        if market_data:
+            world.market = MarketState(**{
+                k: v for k, v in market_data.items() if k in MarketState.__dataclass_fields__
+            })
+        else:
+            world.market.food_price = int(data.get("food_price", FOOD_PRICE))
+        world.food_price = world.market.food_price
         bank_data = data.get("central_bank", {})
         world.central_bank = CentralBank(**{k:v for k,v in bank_data.items()
                                             if k in CentralBank.__dataclass_fields__})

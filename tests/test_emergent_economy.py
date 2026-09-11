@@ -810,3 +810,58 @@ def test_education_creates_a_small_skilled_wage_advantage():
     worker.education_level = 100
 
     assert world._wage_for(worker, skilled_job) == untrained_wage+5
+
+
+def test_food_price_moves_gradually_with_real_supply():
+    world = make_world()
+
+    world._update_market_prices()
+    scarce_price = world.market.food_price
+    assert scarce_price == 3
+
+    world.workplaces.append(Workplace(
+        90, "Jordbruk", 20, 6, employed=6, stock_food=1000, blocks=[(3, 3)]
+    ))
+    world._update_market_prices()
+
+    assert world.market.food_price == scarce_price-1
+    assert world.food_price == world.market.food_price
+
+
+def test_housing_shortage_raises_rent_and_vacancies_cool_it():
+    world = make_world()
+
+    world._update_market_prices()
+    shortage_rent = world.market.room_rent
+    assert shortage_rent > 6
+
+    for index in range(3):
+        world.buildings.append(Building(3+index, 3, "#4aa3ff", "Bostad",
+                                        owner_id=world.humans[index].id, housing_units=5))
+    world._assign_housing()
+    world._update_market_prices()
+
+    assert world.market.room_rent < shortage_rent
+
+
+def test_labour_shortage_raises_offered_wages():
+    world = make_world()
+    workplace = Workplace(90, "Basjobb", 36, 100, money=10000)
+    world.workplaces.append(workplace)
+    worker = world.humans[0]
+    old_wage = world._wage_for(worker, workplace)
+
+    world._update_market_prices()
+
+    assert world.market.wage_index > 1
+    assert world._wage_for(worker, workplace) > old_wage
+
+
+def test_market_state_survives_save_and_load():
+    world = make_world()
+    world._update_market_prices()
+
+    loaded = World.from_dict(world.to_dict())
+
+    assert loaded.market == world.market
+    assert loaded.food_price == world.market.food_price

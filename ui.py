@@ -8,11 +8,8 @@ import customtkinter as ctk
 from models import WorldConfig
 from sprites import SpriteLibrary
 from world import (
-    APARTMENT_RENT,
     HOME_RUNNING_COSTS,
-    HOTEL_RENT,
     REGIONS,
-    RENT_COST,
     SIZE_MAP,
     TRANSPORT_MODES,
     World,
@@ -356,6 +353,8 @@ class App(ctk.CTk):
                 "Centrumyta", "Dragningskraft", "Kriminalitet", "Kommunens pengar",
                 "Utgifter", "A-kassa", "Total ekonomi", "Penningmängd",
                 "Servicetäckning", "Serviceeffekt", "Extern balans", "Bokföringsavvikelse",
+                "Matpris", "Rumshyra", "Lägenhetshyra", "Hotellpris",
+                "Lönenivå", "Byggkostnadsnivå",
             ],
             command=lambda _value: self._update_stats_window(),
             width=160,
@@ -574,8 +573,9 @@ class App(ctk.CTk):
             if selected.home_owner_id == selected.id and selected.home_kind in HOME_RUNNING_COSTS:
                 lines.append(f"Boendedrift: {HOME_RUNNING_COSTS[selected.home_kind]} SM/mån")
             if renting:
-                rent = HOTEL_RENT if selected.home_kind == "Hotell" else (
-                    APARTMENT_RENT if selected.home_kind == "Lägenhet" else RENT_COST
+                rent = self.world.market.hotel_rate if selected.home_kind == "Hotell" else (
+                    self.world.market.apartment_rent if selected.home_kind == "Lägenhet"
+                    else self.world.market.room_rent
                 )
                 lines.append(f"Hyra: {rent} SM/mån")
             if owned_housing:
@@ -664,6 +664,9 @@ class App(ctk.CTk):
             "Penningmängd": "money_supply", "Extern balans": "external_balance",
             "Servicetäckning": "service_coverage", "Serviceeffekt": "service_effectiveness",
             "Bokföringsavvikelse": "money_discrepancy",
+            "Matpris": "food_price", "Rumshyra": "room_rent",
+            "Lägenhetshyra": "apartment_rent", "Hotellpris": "hotel_rate",
+            "Lönenivå": "wage_index", "Byggkostnadsnivå": "construction_index",
         }
         key = key_map.get(metric, "population")
         source = self.world.history_year if self.stats_per_year.get() else self.world.history
@@ -703,6 +706,12 @@ class App(ctk.CTk):
                 "service_effectiveness": (round(100*sum(s.effectiveness for n, s in self.world.service_states.items()
                                                          if self.world.services.get(n))
                                                 /max(1, sum(self.world.services.values())), 1)),
+                "food_price": self.world.market.food_price,
+                "room_rent": self.world.market.room_rent,
+                "apartment_rent": self.world.market.apartment_rent,
+                "hotel_rate": self.world.market.hotel_rate,
+                "wage_index": round(self.world.market.wage_index*100, 1),
+                "construction_index": round(self.world.market.construction_index*100, 1),
             }
             data = [fallback.get(key, 0)]
         current = data[-1] if data else 0
@@ -750,6 +759,15 @@ class App(ctk.CTk):
             f"Barnomsorg: {self.world.last_childcare_supported}\n"
             f"Genomsnittlig kompetens: {stats['average_education']}    "
             f"Barn i hushållen: {stats['dependents']}\n\n"
+            "LOKAL MARKNAD\n"
+            f"Mat: {self.world.market.food_price} SM/portion    "
+            f"Rum: {self.world.market.room_rent} SM    "
+            f"Lägenhet: {self.world.market.apartment_rent} SM    "
+            f"Hotell: {self.world.market.hotel_rate} SM\n"
+            f"Lönenivå: {self.world.market.wage_index*100:.0f}%    "
+            f"Byggkostnadsnivå: {self.world.market.construction_index*100:.0f}%    "
+            f"Tryck mat/bostad/arbete: {self.world.market.food_pressure:.2f} / "
+            f"{self.world.market.housing_pressure:.2f} / {self.world.market.labour_pressure:.2f}\n\n"
             "MAT OCH ARBETE\n"
             f"Mat tillgänglig: {self.world.last_food_supply:<7} Mat såld: {self.world.last_food_sold:<7} "
             f"Mat i gårdslager: {stats['food_stored']}\n"
