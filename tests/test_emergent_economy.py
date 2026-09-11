@@ -380,6 +380,70 @@ def test_buildable_map_reaches_the_new_one_block_margin():
     assert any(1 in coordinate for coordinate in cells)
 
 
+def test_better_paid_shop_can_recruit_from_a_well_supplied_farm():
+    world = make_world()
+    for human in world.humans: human.job_id = 1
+    farm = Workplace(1, "Jordbruk", 20, 10, employed=10, money=1000,
+                     stock_food=1000, blocks=[(15, 15)])
+    shop = Workplace(2, "Mataffär", 32, 2, money=1000, blocks=[(16, 15)])
+    world.workplaces = [farm, shop]
+
+    world._assign_jobs_and_pay_wages()
+
+    assert shop.employed >= 1
+    assert farm.employed >= 8
+
+
+def test_transport_is_chosen_for_the_actual_commute():
+    expectations = ((10, 100, "Cykel"), (25, 100, "Buss"), (50, 500, "Bil"))
+    for distance, money, expected in expectations:
+        world = make_world()
+        human = world.humans[0]
+        human.home_x = human.home_y = 1
+        human.money = money
+        human.job_id = 90
+        world.workplaces = [Workplace(90, "Industri", 65, 1, money=1000,
+                                      blocks=[(1+distance, 1)])]
+
+        world._apply_transport_choices()
+
+        assert human.transport_mode == expected
+
+
+def test_staffed_food_shop_receives_a_share_of_food_sales():
+    world = make_world()
+    for human in world.humans:
+        human.food = 0
+        human.money = 100
+    farm = Workplace(1, "Jordbruk", 20, 2, employed=1, money=0, stock_food=1000)
+    shop = Workplace(2, "Mataffär", 32, 2, employed=1, money=0)
+    world.workplaces = [farm, shop]
+
+    world._apply_food()
+
+    assert shop.money > 0
+    assert shop.monthly_profit > 0
+
+
+def test_housing_can_form_more_than_one_neighbourhood():
+    world = make_world()
+    for _ in range(30):
+        world._claim_near_activity("Bostad", "#4aa3ff", None, 1)
+    coordinates = {(b.x, b.y) for b in world.buildings if b.kind == "Bostad"}
+    unseen = set(coordinates)
+    components = 0
+    while unseen:
+        components += 1
+        stack = [unseen.pop()]
+        while stack:
+            x, y = stack.pop()
+            neighbours = {(x+1, y), (x-1, y), (x, y+1), (x, y-1)} & unseen
+            unseen -= neighbours
+            stack.extend(neighbours)
+
+    assert components > 1
+
+
 def test_pinned_resident_collects_personal_history():
     world = make_world()
     human = world.humans[0]

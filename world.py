@@ -30,9 +30,9 @@ HOTEL_RENT = 10
 HOTEL_ROOMS_PER_BLOCK = 12
 BUILD_MARGIN = 1
 TRANSPORT_MODES = {
-    "Gå": {"purchase": 0, "monthly": 0, "range": 9},
-    "Cykel": {"purchase": 35, "monthly": 1, "range": 20},
-    "Buss": {"purchase": 0, "monthly": 5, "range": 38},
+    "Gå": {"purchase": 0, "monthly": 0, "range": 5},
+    "Cykel": {"purchase": 35, "monthly": 1, "range": 18},
+    "Buss": {"purchase": 0, "monthly": 5, "range": 45},
     "Bil": {"purchase": 220, "monthly": 16, "range": 65},
 }
 # Kept as aliases for old saves and extensions importing these constants.
@@ -167,7 +167,7 @@ class World:
         self._sync_population(); self._age_population(); self._develop_apartment_housing()
         self._evaluate_housing_market()
         self._spawn_new_businesses(); self._sync_public_service_jobs()
-        self._apply_transport_choices(); self._assign_jobs_and_pay_wages()
+        self._assign_jobs_and_pay_wages(); self._apply_transport_choices()
         self._apply_unemployment_support(); self._apply_pensions()
         hungry = self._apply_food()
         self._assign_housing(); self._sync_tents(); self._apply_housing_running_costs()
@@ -340,11 +340,12 @@ class World:
         desired_hotel_rooms = temporary_need+self.last_arrivals*3+people//25
         return {
             "Jordbruk": food_gap * 12,
-            "Mataffär": max(0, people / 22 - sum(w.kind == "Mataffär" for w in self.workplaces)) * (1+wealth/100),
+            "Mataffär": max(0, people / 60 - sum(w.kind == "Mataffär" for w in self.workplaces)) * (1+wealth/100),
             "Basjobb": max(0, people-jobs) / people * 3,
             "Service": max(0, people/35-sum(w.kind == "Service" for w in self.workplaces)) * wealth/45,
             "Hotell": max(0, (desired_hotel_rooms-hotel_rooms)/max(4, people/20))*(1+wealth/100),
-            "Industri": max(0, min(2, (wealth-45)/55)) if food_gap < .15 else 0,
+            "Industri": (max(0, people/45-sum(w.kind == "Industri" for w in self.workplaces))
+                          *max(0, min(2, (wealth-45)/55))) if food_gap < .15 else 0,
             "Bostad": tents/people * wealth/30,
         }
 
@@ -403,8 +404,12 @@ class World:
         capacity = min(rules["capacity_max"], max(rules["capacity_min"], math.ceil(len(self.humans)/divisor)))
         seed = min(owner.money, rules["wage"]*max(1, capacity))
         owner.money -= seed
-        self.workplaces.append(Workplace(self.next_workplace_id, kind, rules["wage"], capacity,
-            strain=rules["strain"], owner_id=owner.id, money=seed, blocks=blocks, demand_score=demand_score))
+        workplace = Workplace(self.next_workplace_id, kind, rules["wage"], capacity,
+            strain=rules["strain"], owner_id=owner.id, money=seed, blocks=blocks, demand_score=demand_score)
+        self.workplaces.append(workplace)
+        working_capital = rules["wage"]*min(3, capacity)*3
+        if kind != "Jordbruk" and workplace.money < working_capital:
+            self._take_loan(workplace, working_capital-workplace.money)
         if kind == "Hotell":
             for coordinate in blocks:
                 self._building_at(coordinate).housing_units = HOTEL_ROOMS_PER_BLOCK
@@ -416,9 +421,16 @@ class World:
         inactive = {(b.x, b.y): b for b in self.buildings if not b.active}
         candidates = []
         seen = set()
+        satellite = ((kind == "Bostad" and self._rng.random() < .14)
+                     or (kind == "Industri" and self._rng.random() < .08))
+        if satellite:
+            candidates = [(self._rng.random(), x, y)
+                          for x in range(BUILD_MARGIN, self.grid_size-BUILD_MARGIN)
+                          for y in range(BUILD_MARGIN, self.grid_size-BUILD_MARGIN)
+                          if (x, y) not in used]
         # Grow from the existing urban edge. This is linear in the number of
         # occupied blocks instead of comparing every grid cell with every block.
-        for distance in range(1, self.grid_size):
+        for distance in ([] if satellite else range(1, self.grid_size)):
             for ax, ay in used:
                 for dx in range(-distance, distance+1):
                     dy = distance-abs(dx)
@@ -439,12 +451,24 @@ class World:
                 nearest_home = min((abs(x-a)+abs(y-b) for a, b in home_sites), default=99)
                 nearest_same = min((abs(x-a)+abs(y-b) for a, b in same_kind), default=8)
                 nearest_industry = min((abs(x-a)+abs(y-b) for a, b in industry), default=99)
+                local_same = sum(abs(x-a)+abs(y-b) <= 3 for a, b in same_kind)
                 if kind == "Industri":
-                    return (nearest_home < 7, nearest_same, -nearest_home, noise)
-                return (nearest_industry < 7, nearest_same, -nearest_industry, noise)
+                    if satellite:
+                        centre = self.grid_size//2
+                        distance_from_centre = abs(x-centre)+abs(y-centre)
+                        return (nearest_home < 7, abs(distance_from_centre-self.grid_size*.45), noise)
+                    return (nearest_home < 7, -local_same, nearest_same, -nearest_home, noise)
+                if satellite:
+                    centre = self.grid_size//2
+                    distance_from_centre = abs(x-centre)+abs(y-centre)
+                    return (nearest_industry < 7, abs(distance_from_centre-self.grid_size*.3), noise)
+                return (nearest_industry < 7, -local_same, nearest_same, noise)
             candidates.sort(key=zone_score)
         else:
             candidates.sort()
+        if satellite and candidates:
+            _, seed_x, seed_y = candidates[0]
+            candidates.sort(key=lambda row: (abs(row[1]-seed_x)+abs(row[2]-seed_y), row[0]))
         chosen = [(x, y) for _, x, y in candidates[:count]]
         if len(chosen) < count: return []
         for x, y in chosen:
@@ -461,14 +485,24 @@ class World:
         centres = [position for position, _ in self.central_blocks(8)]
         if not centres: centres = [(self.grid_size//2, self.grid_size//2)]
         plots = []
+        farms = [(b.x, b.y) for b in self.buildings if b.active and b.kind == "Jordbruk"]
         for x in range(BUILD_MARGIN, self.grid_size-BUILD_MARGIN-1):
             for y in range(BUILD_MARGIN, self.grid_size-BUILD_MARGIN-1):
                 cells = ((x, y), (x+1, y), (x, y+1), (x+1, y+1))
                 if any(cell in used for cell in cells): continue
                 distance = min(abs(x-cx)+abs(y-cy) for cx, cy in centres)
-                plots.append((distance, self._rng.random(), cells))
+                nearest_farm = min((abs(x-fx)+abs(y-fy) for fx, fy in farms), default=self.grid_size)
+                plots.append((distance, nearest_farm, self._rng.random(), cells))
         if not plots: return []
-        _, _, cells = max(plots, key=lambda row: (row[0], row[1]))
+        # Some founders deliberately settle new land. Most extend an agricultural
+        # district, but a sizeable random term prevents corner-filling geometry.
+        if self._rng.random() < .20:
+            viable = [row for row in plots if row[0] >= self.grid_size*.18]
+            _, _, _, cells = self._rng.choice(viable or plots)
+        elif farms:
+            _, _, _, cells = max(plots, key=lambda row: (row[0]-row[1]*.7+row[2]*self.grid_size*.35))
+        else:
+            _, _, _, cells = max(plots, key=lambda row: row[0]+row[2]*self.grid_size*.45)
         for x, y in cells:
             old = inactive.get((x, y))
             if old:
@@ -481,31 +515,88 @@ class World:
 
     def _assign_jobs_and_pay_wages(self):
         previous_jobs = {h.id: h.job_id for h in self.humans}
-        valid_jobs = {w.id for w in self.workplaces}
+        signals = self._market_signals()
         for h in self.humans: h.job_id = None
         for w in self.workplaces: w.employed = 0
-        employed = set()
-        workplaces = sorted(self.workplaces,
-                            key=lambda x: (x.kind == "Jordbruk", x.demand_score), reverse=True)
+        eligible = [h for h in self.humans if not h.sick and not h.retired]
+        people = {h.id: h for h in eligible}
+        for workplace in self.workplaces:
+            if not workplace.service_name:
+                workplace.demand_score = signals.get(workplace.kind, workplace.demand_score)
+        workplaces = sorted(self.workplaces, key=lambda w: (
+            bool(w.service_name), w.demand_score*max(1, w.wage), w.wage
+        ), reverse=True)
+        assignments: dict[int, int] = {}
+        counts = {w.id: 0 for w in workplaces}
+
+        def assign(human, workplace):
+            assignments[human.id] = workplace.id
+            counts[workplace.id] += 1
+
+        # Owners operate their own new firms when possible. Existing staff then
+        # retain their profession, which prevents random monthly reshuffling.
+        for workplace in workplaces:
+            owner = people.get(workplace.owner_id)
+            if owner and owner.id not in assignments and self._can_commute(owner, workplace):
+                assign(owner, workplace)
+        for workplace in [w for w in workplaces if w.kind in ("Mataffär", "Hotell")]:
+            if counts[workplace.id]: continue
+            pool = [h for h in eligible if h.id not in assignments and self._can_commute(h, workplace)]
+            pool.sort(key=lambda h: (previous_jobs.get(h.id) == workplace.id,
+                                     self._preference(h, workplace.kind)), reverse=True)
+            if pool: assign(pool[0], workplace)
+        by_id = {w.id: w for w in workplaces}
+        for human in eligible:
+            old = by_id.get(previous_jobs.get(human.id))
+            if (human.id not in assignments and old and counts[old.id] < old.capacity
+                    and self._can_commute(human, old)):
+                assign(human, old)
+
+        for workplace in workplaces:
+            vacancies = workplace.capacity-counts[workplace.id]
+            if vacancies <= 0: continue
+            pool = [h for h in eligible if h.id not in assignments and self._can_commute(h, workplace)]
+            pool.sort(key=lambda h: (
+                self._preference(h, workplace.kind),
+                -self._commute_distance(h, workplace), h.money
+            ), reverse=True)
+            for human in pool[:vacancies]: assign(human, workplace)
+
+        # A completely locked labour market kills every new firm. Vacant,
+        # better-paid workplaces may therefore recruit a few workers per month.
+        for workplace in workplaces:
+            vacancies = workplace.capacity-counts[workplace.id]
+            if vacancies <= 0: continue
+            candidates = []
+            for human in eligible:
+                old = by_id.get(assignments.get(human.id))
+                if not old or old.id == workplace.id or not self._can_commute(human, workplace): continue
+                if old.kind == workplace.kind: continue
+                if old.kind in ("Mataffär", "Hotell") and counts[old.id] <= 1: continue
+                gain = self._wage_for(human, workplace)-self._wage_for(human, old)
+                essential_reopening = (counts[workplace.id] == 0 and workplace.kind in ("Mataffär", "Hotell"))
+                if gain < 8 and not essential_reopening: continue
+                if old.kind == "Jordbruk" and signals.get("Jordbruk", 0) > .5: continue
+                essential_bonus = 80 if essential_reopening and old.kind != "Jordbruk" else 0
+                candidates.append((gain+essential_bonus+self._preference(human, workplace.kind)*3, human, old))
+            for _, human, old in sorted(candidates, key=lambda row: row[0], reverse=True)[:min(vacancies, max(1, workplace.capacity//3))]:
+                counts[old.id] -= 1
+                assignments[human.id] = workplace.id
+                counts[workplace.id] += 1
+
         for w in workplaces:
-            owner = next((h for h in self.humans if h.id == w.owner_id), None)
-            pool = ([owner] if owner and owner.id not in employed and not owner.sick and not owner.retired
-                     and self._can_commute(owner, w) else [])
-            # Residents retain their profession. Farm workers in particular are
-            # not randomly reassigned to a shop or factory every month.
-            pool += [h for h in self.humans if h.id not in employed and h is not owner
-                     and not h.sick and not h.retired and previous_jobs[h.id] == w.id]
-            pool += [h for h in self.humans if h.id not in employed and h is not owner
-                     and not h.sick and not h.retired and previous_jobs[h.id] not in valid_jobs]
-            pool = [h for h in pool if self._can_commute(h, w)]
             payroll = 0
-            for h in pool[:w.capacity]:
+            staff = [people[human_id] for human_id, workplace_id in assignments.items()
+                     if workplace_id == w.id]
+            for h in staff:
                 wage = self._wage_for(h, w)
                 if w.service_name and w.money < wage and self.money >= wage:
                     self.money -= wage
                     self.last_public_payroll += wage
                     w.money += wage
                 if w.money < wage and w.kind == "Jordbruk": w.money += wage
+                if w.money < wage and w.kind in ("Mataffär", "Hotell"):
+                    self._take_loan(w, wage-w.money)
                 if w.money < wage: continue
                 contribution = max(1, int(wage*.08))
                 w.money -= wage; h.money += wage-contribution; h.job_id = w.id
@@ -514,11 +605,12 @@ class World:
                 self.central_bank.reserves += contribution
                 self.central_bank.pension_assets += contribution
                 self.central_bank.last_pension_contributions += contribution
-                payroll += wage; w.employed += 1; employed.add(h.id)
+                payroll += wage; w.employed += 1
             factor = (0 if w.service_name else
                       {"Basjobb": 1.35, "Service": 1.25, "Industri": 1.45}.get(w.kind, 0))
-            revenue = int(payroll * factor * min(1.5, max(.4, w.demand_score)))
+            revenue = int(payroll * factor * min(1.5, max(.8, w.demand_score)))
             w.money += revenue; w.monthly_profit = revenue-payroll
+        employed = {h.id for h in self.humans if h.job_id is not None}
         self.unemployed = sum(not h.retired and h.id not in employed for h in self.humans)
 
     def _wage_for(self, human, workplace):
@@ -527,42 +619,81 @@ class World:
         return max(20, min(1000, workplace.wage+min(100, human.status_items*2)))
 
     def _can_commute(self, human, workplace):
-        if workplace.kind == "Jordbruk": return True  # farms include on-site work access
-        if human.home_x is None or human.home_y is None or not workplace.blocks: return True
-        distance = min(abs(human.home_x-x)+abs(human.home_y-y) for x, y in workplace.blocks)
-        limit = TRANSPORT_MODES[self._transport_mode(human)]["range"]
-        return distance <= limit
+        if workplace.kind == "Jordbruk" and workplace.owner_id == human.id: return True
+        distance = self._commute_distance(human, workplace)
+        if distance == 0: return True
+        mode = self._transport_mode(human)
+        if distance <= TRANSPORT_MODES[mode]["range"]: return True
+        for candidate, terms in TRANSPORT_MODES.items():
+            owned = candidate == "Gå" or candidate == "Buss" or (
+                candidate == "Cykel" and human.has_bike) or (candidate == "Bil" and human.has_car)
+            purchase = 0 if owned else terms["purchase"]
+            buffer = HOUSING_BUFFER*3 if candidate == "Bil" else HOUSING_BUFFER
+            if distance <= terms["range"] and human.money >= purchase+terms["monthly"]+buffer:
+                return True
+        return False
+
+    def _commute_distance(self, human, workplace):
+        if human.home_x is None or human.home_y is None or not workplace.blocks: return 0
+        return min(abs(human.home_x-x)+abs(human.home_y-y) for x, y in workplace.blocks)
 
     def _transport_mode(self, human):
         mode = human.transport_mode if human.transport_mode in TRANSPORT_MODES else "Gå"
         if human.has_car and mode == "Gå": mode = "Bil"  # migrate older saves
+        if mode == "Cykel": human.has_bike = True
         human.transport_mode, human.has_car = mode, mode == "Bil"
         return mode
 
+    def _record_purchase(self, human, category, item, amount):
+        if amount <= 0: return
+        human.recent_purchases.append({"month": self.month, "category": category,
+                                       "item": item, "amount": amount})
+        human.recent_purchases = human.recent_purchases[-16:]
+
     def _apply_transport_choices(self):
         for human in self.humans:
-            mode = self._transport_mode(human)
-            monthly = TRANSPORT_MODES[mode]["monthly"]
-            if human.money >= monthly:
-                human.money -= monthly
-                human.last_living_cost += monthly
-            elif monthly:
-                human.transport_mode = "Gå"; human.has_car = False
-                mode = "Gå"
-            if human.retired or human.home_x is None or human.home_y is None: continue
-            distances = [min(abs(human.home_x-x)+abs(human.home_y-y) for x, y in workplace.blocks)
-                         for workplace in self.workplaces if workplace.blocks]
-            if not distances: continue
-            nearest = min(distances)
-            if nearest <= TRANSPORT_MODES[mode]["range"]: continue
-            for candidate in ("Cykel", "Buss", "Bil"):
-                terms = TRANSPORT_MODES[candidate]
-                buffer = HOUSING_BUFFER*4 if candidate == "Bil" else HOUSING_BUFFER
-                if nearest <= terms["range"] and human.money >= terms["purchase"]+terms["monthly"]+buffer:
-                    human.money -= terms["purchase"]
-                    human.last_living_cost += terms["purchase"]
-                    human.transport_mode, human.has_car = candidate, candidate == "Bil"
+            current = self._transport_mode(human)
+            workplace = next((w for w in self.workplaces if w.id == human.job_id), None)
+            distance = self._commute_distance(human, workplace) if workplace else 0
+            desired = "Gå"
+            for candidate in ("Gå", "Cykel", "Buss", "Bil"):
+                if distance <= TRANSPORT_MODES[candidate]["range"]:
+                    desired = candidate
                     break
+            if human.has_car: desired = "Bil"
+            # A few affluent, status-oriented households still choose a car even
+            # without a forced long commute; it remains deliberately uncommon.
+            aspirational_car = (not human.retired and not human.has_car and self.month%12 == 0
+                                and human.money >= CAR_PRICE+HOUSING_BUFFER*6
+                                and self._rng.random() < {"status": .18, "risk": .07}.get(human.drive, .015))
+            if aspirational_car: desired = "Bil"
+            terms = TRANSPORT_MODES[desired]
+            owns = desired in ("Gå", "Buss") or (desired == "Cykel" and human.has_bike) or (
+                desired == "Bil" and human.has_car)
+            purchase = 0 if owns else terms["purchase"]
+            if human.money < purchase+terms["monthly"]:
+                affordable = []
+                for mode, values in TRANSPORT_MODES.items():
+                    already_owned = mode in ("Gå", "Buss") or (mode == "Cykel" and human.has_bike) or (
+                        mode == "Bil" and human.has_car)
+                    price = 0 if already_owned else values["purchase"]
+                    if distance <= values["range"] and human.money >= price+values["monthly"]:
+                        affordable.append(mode)
+                desired = affordable[-1] if affordable else "Gå"
+                terms = TRANSPORT_MODES[desired]
+                owns = desired in ("Gå", "Buss") or (desired == "Cykel" and human.has_bike) or (
+                    desired == "Bil" and human.has_car)
+                purchase = 0 if owns else terms["purchase"]
+            if purchase:
+                human.money -= purchase; human.last_living_cost += purchase
+                self._record_purchase(human, "Transport", desired, purchase)
+                if desired == "Cykel": human.has_bike = True
+                if desired == "Bil": human.has_car = True
+            monthly = terms["monthly"]
+            if monthly and human.money >= monthly:
+                human.money -= monthly; human.last_living_cost += monthly
+                self._record_purchase(human, "Transport", desired, monthly)
+            human.transport_mode = desired
 
     def _apply_food(self):
         farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
@@ -575,13 +706,24 @@ class World:
             bought = min(desired, stock, h.money//self.food_price)
             food_cost = bought*self.food_price
             h.money -= food_cost; h.last_living_cost += food_cost
+            self._record_purchase(h, "Mat", f"{bought} portioner", food_cost)
             h.food += bought; stock -= bought; sold += bought
             h.hungry = consumed+bought < FOOD_MONTHLY_NEED
             h.hungry_months = h.hungry_months+1 if h.hungry else 0
         revenue = sold*self.food_price
-        if farms and revenue:
+        retailers = [w for w in self.workplaces if w.kind == "Mataffär" and w.employed]
+        retail_revenue = int(revenue*.35) if retailers else 0
+        farm_revenue = revenue-retail_revenue
+        if farms and farm_revenue:
             total = sum(max(1, w.employed) for w in farms)
-            for w in farms: w.money += revenue*max(1, w.employed)//total
+            for w in farms:
+                share = farm_revenue*max(1, w.employed)//total
+                w.money += share; w.monthly_profit += share
+        if retailers and retail_revenue:
+            total = sum(w.employed for w in retailers)
+            for retailer in retailers:
+                share = retail_revenue*retailer.employed//total
+                retailer.money += share; retailer.monthly_profit += share
         # Unsold harvest becomes a local buffer instead of disappearing. Storage
         # is deliberately finite so several bad harvests still matter.
         for farm in farms:
@@ -629,6 +771,7 @@ class World:
                                                         for w in self.workplaces) else "Hydda")
                 building.construction_month = self.month
                 buyer.money -= HOUSE_BUILD_COST
+                self._record_purchase(buyer, "Boende", "Byggde eget hus", HOUSE_BUILD_COST)
                 buyer.last_housing_investment_month = self.month
                 self.money += HOUSE_BUILD_COST
                 self.last_development_revenue += HOUSE_BUILD_COST
@@ -651,6 +794,7 @@ class World:
             if building.housing_type != "Gård":
                 building.housing_type = self._home_type(building)
             owner.money -= HOUSE_EXPANSION_COST
+            self._record_purchase(owner, "Boende", f"Byggde ut till nivå {building.level}", HOUSE_EXPANSION_COST)
             owner.last_housing_investment_month = self.month
             self.money += HOUSE_EXPANSION_COST
             self.last_development_revenue += HOUSE_EXPANSION_COST
@@ -687,6 +831,7 @@ class World:
                     tenant = renters[renter_index]; renter_index += 1
                     tenant.money -= RENT_COST
                     tenant.last_living_cost += RENT_COST
+                    self._record_purchase(tenant, "Boende", "Rumshyra", RENT_COST)
                     if owner: owner.money += RENT_COST
                     tenant.home_kind = self._home_type(house); tenant.home_owner_id = owner_id
                     tenant.home_x, tenant.home_y = house.x, house.y
@@ -695,6 +840,7 @@ class World:
                 if renter_index >= len(renters): break
                 tenant = renters[renter_index]; renter_index += 1
                 tenant.money -= APARTMENT_RENT; tenant.last_living_cost += APARTMENT_RENT
+                self._record_purchase(tenant, "Boende", "Lägenhetshyra", APARTMENT_RENT)
                 self.money += APARTMENT_RENT
                 tenant.home_kind = "Lägenhet"; tenant.home_owner_id = 0
                 tenant.home_x, tenant.home_y = apartment.x, apartment.y
@@ -709,8 +855,11 @@ class World:
                 guest = guests[guest_index]; guest_index += 1
                 guest.money -= HOTEL_RENT
                 guest.last_living_cost += HOTEL_RENT
+                self._record_purchase(guest, "Boende", "Hotellnatt", HOTEL_RENT)
                 business = hotel_by_coordinate.get((hotel.x, hotel.y))
-                if business: business.money += HOTEL_RENT
+                if business:
+                    business.money += HOTEL_RENT
+                    business.monthly_profit += HOTEL_RENT
                 guest.home_kind = "Hotell"; guest.home_owner_id = hotel.owner_id
                 guest.home_x, guest.home_y = hotel.x, hotel.y
 
@@ -764,6 +913,7 @@ class World:
             cost = HOME_RUNNING_COSTS.get(self._home_type(building), 0)
             human.money = max(0, human.money-cost)
             human.last_living_cost += cost
+            self._record_purchase(human, "Boende", f"Drift {self._home_type(building)}", cost)
 
     def _building_at(self, coordinate):
         return next(b for b in reversed(self.buildings)
@@ -883,8 +1033,12 @@ class World:
                           (b.housing_units or HOTEL_ROOMS_PER_BLOCK) and newcomer.money >= HOTEL_RENT), None)
             if hotel is None: continue
             newcomer.money -= HOTEL_RENT
+            newcomer.last_living_cost += HOTEL_RENT
+            self._record_purchase(newcomer, "Boende", "Första hotellnatten", HOTEL_RENT)
             business = businesses.get((hotel.x, hotel.y))
-            if business: business.money += HOTEL_RENT
+            if business:
+                business.money += HOTEL_RENT
+                business.monthly_profit += HOTEL_RENT
             newcomer.home_kind = "Hotell"; newcomer.home_owner_id = hotel.owner_id
             newcomer.home_x, newcomer.home_y = hotel.x, hotel.y
             occupied[(hotel.x, hotel.y)] += 1
@@ -973,9 +1127,11 @@ class World:
             chance = {"status": .35, "sparsam": .04}.get(h.drive, .1)
             if h.home_kind in PERMANENT_HOME_KINDS and not h.hungry and h.money > HOUSING_BUFFER*2 and self._rng.random() < chance:
                 h.money -= 10; h.status_items += 1
+                self._record_purchase(h, "Fritid", "Statuspryl", 10)
             elif not h.hungry and h.money > HOUSING_BUFFER+12 and self._rng.random() < .12:
                 h.money -= 6
                 h.leisure_items += 1
+                self._record_purchase(h, "Fritid", "Fritidsaktivitet", 6)
 
     def _apply_unemployment_support(self):
         self.last_unemployment_support = 0
@@ -1014,7 +1170,9 @@ class World:
                 h.job_id = None; h.home_kind = "Tält"; h.home_owner_id = None
 
     def _take_loan(self, target, amount):
-        if (amount <= 0 or amount > max(0, target.money*4)
+        business_limit = getattr(target, "capacity", 0)*getattr(target, "wage", 0)*3
+        credit_limit = max(40, target.money*4, business_limit)
+        if (amount <= 0 or amount+target.loan_balance > credit_limit
                 or amount > self.central_bank.reserves): return False
         target.loan_balance += amount; target.money += amount
         self.central_bank.reserves -= amount
@@ -1043,7 +1201,7 @@ class World:
                 kept.append(w)
                 continue
             w.idle_months = w.idle_months+1 if w.employed == 0 else 0
-            if w.idle_months < 8 or w.kind == "Jordbruk": kept.append(w); continue
+            if w.idle_months < 18 or w.kind == "Jordbruk": kept.append(w); continue
             for b in self.buildings:
                 if (b.x, b.y) in w.blocks: b.active = False; b.kind = "Övergiven"; b.owner_id = None
         self.workplaces = kept

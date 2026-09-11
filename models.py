@@ -50,6 +50,7 @@ class Human:
     home_x: int | None = None
     home_y: int | None = None
     has_car: bool = False
+    has_bike: bool = False
     leisure_items: int = 0
     pinned: bool = False
     personal_history: list[dict] = field(default_factory=list)
@@ -59,6 +60,7 @@ class Human:
     last_income: int = 0
     last_living_cost: int = 0
     financial_stress_months: int = 0
+    recent_purchases: list[dict] = field(default_factory=list)
 
 @dataclass
 class Workplace:

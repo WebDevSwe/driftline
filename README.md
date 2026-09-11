@@ -141,11 +141,20 @@ preferens. Högst rimlig poäng vinner; slump används endast för små variatio
 som placering och individuella egenskaper.
 
 Jobb är avståndsberoende. Invånaren väljer det billigaste transportsätt som når
-arbetet: gång når 9 block gratis, cykel 20 block (`35 SM` att köpa och `1 SM`
-per månad), buss 38 block (`5 SM` per månad) och bil 65 block (`220 SM` att
+arbetet: gång når 5 block gratis, cykel 18 block (`35 SM` att köpa och `1 SM`
+per månad), buss 45 block (`5 SM` per månad) och bil 65 block (`220 SM` att
 köpa och `16 SM` per månad). Det gör bilen till ett dyrt val för verkligt långa
-resor i stället för en allmän statuspryl. Jordbruk har tillgång till arbete på
-plats.
+resor i stället för en allmän statuspryl. Valet grundas på personens verkliga
+arbetsadress. En gårdsägare kan arbeta på sin egen mark, medan anställda måste
+kunna ta sig dit.
+
+Anställda behåller normalt sitt arbete, men nya bättre betalda företag kan
+rekrytera ett begränsat antal personer varje månad. En ort med full
+sysselsättning låser därmed inte ute all ny handel och industri. Mataffärer får
+en del av invånarnas verkliga matköp och centralbanken kan finansiera ett ungt
+företags första löner. Antalet nya butiker och industrier begränsas samtidigt
+av befolkningens efterfrågan. En obemannad verksamhet får 18 månader att öppna
+innan platsen överges.
 
 ### Dynamiskt centrum
 
@@ -159,6 +168,15 @@ Kartblock kan klickas för att visa adress, byggnadstyp, ägare, centralitet,
 boendekapacitet, verksamhetens kassa och resultat, anställda samt vilka som bor
 på adressen.
 
+Kartan och detaljvyerna använder pixelsprites från projektets `UX`-mapp. Ett
+klick på ett block öppnar en kvartersvy med en stor byggnadsbild, verksamhetens
+månadsekonomi och en kort förklaring av hur platsen påverkar samhället. Boende
+och personer som arbetar på blocket är klickbara och leder till en personvy.
+Porträttet följer personens identitet men byter åldersvariant under livet.
+Personvyn samlar yrke, intresse, adress, resa, inkomst, levnadskostnad,
+pensionssparande och de senaste 16 inköpen. Den förklarar också de aktuella
+orsakerna bakom personens hälsa och missnöje.
+
 Aktiverad samhällsservice får nu också en fysisk byggnad: polisstation,
 brandkår, sjukvård, skola, barnomsorg eller A-kassa. Servicebyggnader och
 befolkning skapar fler centrumblock omkring den starkaste lokala kärnan. Alla
@@ -168,7 +186,11 @@ Byggbar yta går nu fram till en blocks marginal i stället för att lämna tre
 oförklarligt tomma rader och kolumner. Nya bostäder söker sig mot befintliga
 bostadskvarter och bort från industri. Industrier söker sig på motsvarande sätt
 till andra industrier och bort från bostäder och gårdar; etablering nära sådana
-känsliga grannar får dessutom en mark- och skyddskostnad.
+känsliga grannar får dessutom en mark- och skyddskostnad. Bostäder och
+industrier har en mindre chans att grunda ett nytt fristående område. Jordbruk
+följer oftast befintlig odlingsbygd men ungefär var femte grundare kan välja ny
+mark på en annan del av kartan. Därmed bryts den tidigare diagonala och
+hörnbundna tillväxten.
 
 ## Kodstruktur
 

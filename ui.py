@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from models import WorldConfig
+from sprites import SpriteLibrary
 from world import (
     APARTMENT_RENT,
     HOME_RUNNING_COSTS,
@@ -20,6 +21,11 @@ from world import (
 WINDOW_SIZE = 900
 GRID_PADDING = 16
 BASE_TICK_MS = 1000
+PANEL = "#121a25"
+PANEL_RAISED = "#182535"
+INK = "#e8eef7"
+MUTED = "#8fa4bb"
+ACCENT = "#e6a84a"
 
 class App(ctk.CTk):
     def __init__(self):
@@ -31,6 +37,7 @@ class App(ctk.CTk):
         self.world = None
         self.running = False
         self.speed_multiplier = 1
+        self.sprites = SpriteLibrary()
 
         self.statusbar = ctk.CTkFrame(self, height=40, fg_color="#131720")
         self.statusbar.pack(fill=tk.X, side=tk.TOP)
@@ -82,8 +89,15 @@ class App(ctk.CTk):
         self.citizens_window = None
         self.citizens_frame = None
         self.citizen_detail = None
+        self.citizen_portrait = None
+        self.citizen_name_label = None
+        self.citizen_context = None
+        self.citizen_transport = None
         self.pin_button = None
         self.selected_human_id = None
+        self.block_window = None
+        self.block_content = None
+        self.selected_block = None
         self.citizens_page = 0
         self._citizens_tick_counter = 0
 
@@ -189,9 +203,11 @@ class App(ctk.CTk):
         if not self.running or not self.world:
             return
         self.world.advance_month()
+        self._render_world()
         self._update_status()
         self._update_stats_window()
         self._update_budget_window()
+        self._update_block_window()
         self._citizens_tick_counter += 1
         has_pinned = any(h.pinned for h in self.world.humans)
         if has_pinned or self._citizens_tick_counter >= 24:
@@ -373,23 +389,40 @@ class App(ctk.CTk):
             return
         window = ctk.CTkToplevel(self)
         window.title("Invånare")
-        window.geometry("780x560")
+        window.geometry("1040x680")
+        window.minsize(900, 600)
         window.transient(self)
         self.citizens_window = window
 
         layout = ctk.CTkFrame(window, fg_color="transparent")
         layout.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
-        layout.grid_columnconfigure(0, weight=1)
-        layout.grid_columnconfigure(1, weight=1)
+        layout.grid_columnconfigure(0, weight=2)
+        layout.grid_columnconfigure(1, weight=3)
+        layout.grid_rowconfigure(0, weight=1)
 
         self.citizens_frame = ctk.CTkScrollableFrame(layout, fg_color="transparent")
         self.citizens_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        detail_frame = ctk.CTkFrame(layout, fg_color="transparent")
+        detail_frame = ctk.CTkFrame(layout, fg_color=PANEL, corner_radius=12)
         detail_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        self.citizen_detail = ctk.CTkLabel(detail_frame, text="", anchor="w", justify="left")
-        self.citizen_detail.pack(fill=tk.BOTH, expand=True, anchor="nw")
+        hero = ctk.CTkFrame(detail_frame, fg_color=PANEL_RAISED, corner_radius=10)
+        hero.pack(fill=tk.X, padx=12, pady=12)
+        self.citizen_portrait = ctk.CTkLabel(hero, text="", width=190, height=190)
+        self.citizen_portrait.pack(side=tk.LEFT, padx=10, pady=10)
+        hero_text = ctk.CTkFrame(hero, fg_color="transparent")
+        hero_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 12), pady=12)
+        self.citizen_name_label = ctk.CTkLabel(
+            hero_text, text="", anchor="w", font=ctk.CTkFont(size=22, weight="bold"), text_color=INK
+        )
+        self.citizen_name_label.pack(fill=tk.X)
+        self.citizen_context = ctk.CTkLabel(hero_text, text="", anchor="w", justify="left", text_color=MUTED)
+        self.citizen_context.pack(fill=tk.X, pady=(6, 0))
+        self.citizen_transport = ctk.CTkLabel(hero, text="", width=90, height=70)
+        self.citizen_transport.pack(side=tk.RIGHT, padx=(0, 12), pady=10)
+        self.citizen_detail = ctk.CTkTextbox(detail_frame, font=("Consolas", 13), fg_color="#0d141d")
+        self.citizen_detail.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        self.citizen_detail.configure(state="disabled")
         self.pin_button = ctk.CTkButton(detail_frame, text="Nåla fast", command=self._toggle_pin_selected)
-        self.pin_button.pack(fill=tk.X, pady=(8, 0))
+        self.pin_button.pack(fill=tk.X, padx=12, pady=(0, 12))
 
         controls = ctk.CTkFrame(window, fg_color="transparent")
         controls.pack(fill=tk.X, padx=16, pady=(0, 12))
@@ -511,16 +544,29 @@ class App(ctk.CTk):
                 and selected.home_owner_id is not None
                 and selected.home_owner_id != selected.id
             )
-            lines = [f"Namn: {selected.name}", f"Ålder: {selected.age}",
-                     f"Pengar: {selected.money} SM", f"Mat: {selected.food}",
-                     f"Energi: {selected.energy}", f"Hälsa: {selected.health}"]
+            interests = {
+                "företagare": "företagande och lokala affärer", "lantbruk": "odling och matförsörjning",
+                "tältliv": "enkelt boende och frihet", "status": "bekvämlighet och status",
+                "risk": "nya möjligheter och risktagande", "sparsam": "sparande och trygghet",
+            }.get(selected.drive, selected.drive)
+            self.citizen_portrait.configure(image=self.sprites.portrait(selected), text="")
+            self.citizen_name_label.configure(text=selected.name)
+            self.citizen_context.configure(
+                text=f"{selected.age} år  •  {job_status}\nIntresse: {interests}\n{address}"
+            )
+            mode = self.world._transport_mode(selected)
+            self.citizen_transport.configure(image=self.sprites.transport(mode), text="")
+            lines = ["VÄLMÅENDE OCH EKONOMI",
+                     f"Pengar                 {selected.money:>6} SM",
+                     f"Inkomst denna månad    {selected.last_income:>6} SM",
+                     f"Levnadskostnad         {selected.last_living_cost:>6} SM",
+                     f"Mat / energi / hälsa   {selected.food} / {selected.energy} / {selected.health}",
+                     f"Missnöje                {selected.dissatisfaction:>6.0f}/100"]
             if selected.sick: lines.append("Status: Sjuk")
             if selected.hungry: lines.append("Status: Hungrig")
             if selected.retired: lines.append("Status: Pensionär")
             if selected.loan_balance: lines.append(f"Lån: {selected.loan_balance} SM")
-            if selected.pension_balance: lines.append(f"Pensionskapital: {selected.pension_balance} SM")
-            if selected.status_items: lines.append(f"Statusprylar: {selected.status_items}")
-            lines += ["", f"Boende: {selected.home_kind}", f"Adress: {address}"]
+            lines += ["", "BOENDE OCH ÄGANDE", f"Boende: {selected.home_kind}", f"Adress: {address}"]
             if selected.home_owner_id == selected.id and selected.home_kind in HOME_RUNNING_COSTS:
                 lines.append(f"Boendedrift: {HOME_RUNNING_COSTS[selected.home_kind]} SM/mån")
             if renting:
@@ -534,14 +580,33 @@ class App(ctk.CTk):
             if tenants: lines.append(f"Hyresgäster nu: {tenants}")
             if owned_businesses:
                 lines += [f"Ägda företag: {owned_businesses}", f"Anställda: {employees}"]
-            lines += ["", f"Arbete: {job_status}"]
+            lines += ["", "ARBETE OCH RESA", f"Arbete: {job_status}"]
             if workplace:
                 lines += [f"Lön: {wage} SM/mån", f"Arbetsplats-ID: {selected.job_id}",
                           f"Arbetsadress: Block {workplace.blocks[0] if workplace.blocks else '-'}",
                           f"Resväg: {commute if commute is not None else '-'} block"]
-            mode = self.world._transport_mode(selected)
             lines.append(f"Transportsätt: {mode} ({TRANSPORT_MODES[mode]['monthly']} SM/mån)")
-            if selected.leisure_items: lines.append(f"Fritidsköp: {selected.leisure_items}")
+            lines += ["", "INKÖP OCH SPARANDE",
+                      f"Mat i skafferiet: {selected.food}",
+                      f"Pensionskapital: {selected.pension_balance} SM",
+                      f"Statusinköp: {selected.status_items}",
+                      f"Fritidsköp: {selected.leisure_items}"]
+            if selected.recent_purchases:
+                lines.append("Senaste transaktioner:")
+                lines.extend(
+                    f"  M{purchase['month']}: {purchase['item']}  −{purchase['amount']} SM"
+                    for purchase in selected.recent_purchases[-6:]
+                )
+            influences = []
+            if selected.hungry: influences.append("− Hunger pressar hälsa och missnöje")
+            if selected.unemployed_months: influences.append(f"− Arbetslös i {selected.unemployed_months} månader")
+            if selected.financial_stress_months: influences.append(
+                f"− Utgifterna har pressat ekonomin i {selected.financial_stress_months} månader")
+            if selected.home_kind in ("Tält", "Bostadslös"): influences.append("− Osäkert boende påverkar hälsa och trivsel")
+            if selected.job_id is not None: influences.append("+ Arbete ger lön och pensionsavsättning")
+            if selected.home_kind not in ("Tält", "Bostadslös"): influences.append("+ Fast boende ger trygghet")
+            if not influences: influences.append("• Inga starka individuella påverkansfaktorer just nu")
+            lines += ["", "VARFÖR MÅR PERSONEN SÅ HÄR?", *influences]
             detail = "\n".join(lines)+"\n"
             if selected.personal_history:
                 first = selected.personal_history[0]
@@ -551,7 +616,10 @@ class App(ctk.CTk):
                     f"Hälsa: {first['health']} → {selected.health}\n"
                     f"Mat: {first['food']} → {selected.food}\n"
                 )
-            self.citizen_detail.configure(text=detail)
+            self.citizen_detail.configure(state="normal")
+            self.citizen_detail.delete("1.0", tk.END)
+            self.citizen_detail.insert("1.0", detail)
+            self.citizen_detail.configure(state="disabled")
             if self.pin_button:
                 self.pin_button.configure(text="Ta bort nål" if selected.pinned else "Nåla fast")
 
@@ -928,38 +996,128 @@ class App(ctk.CTk):
         x = int((event.x-start_x)//cell)
         y = int((event.y-start_y)//cell)
         if not (0 <= x < grid_size and 0 <= y < grid_size): return
+        self.selected_block = (x, y)
+        self._open_block_window()
+
+    def _open_block_window(self):
+        if not self.world or self.selected_block is None: return
+        if self.block_window and self.block_window.winfo_exists():
+            self.block_window.lift()
+            self._update_block_window()
+            return
+        window = ctk.CTkToplevel(self)
+        window.title("Kvartersvy")
+        window.geometry("1000x700")
+        window.minsize(840, 600)
+        window.transient(self)
+        self.block_window = window
+        self.block_content = ctk.CTkFrame(window, fg_color="transparent")
+        self.block_content.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        self._update_block_window()
+
+    def _show_citizen(self, human_id):
+        if not self.world: return
+        self.selected_human_id = human_id
+        resident = next((h for h in self.world.humans if h.id == human_id), None)
+        if resident and not resident.pinned:
+            unpinned = [h for h in self.world.humans if not h.pinned]
+            if resident in unpinned: self.citizens_page = unpinned.index(resident)//10
+        self._open_citizens_window()
+
+    def _update_block_window(self):
+        if (not self.world or self.selected_block is None or not self.block_window
+                or not self.block_window.winfo_exists() or self.block_content is None): return
+        for child in self.block_content.winfo_children(): child.destroy()
+        x, y = self.selected_block
         buildings = [b for b in self.world.buildings if b.active and b.x == x and b.y == y]
         residents = [h for h in self.world.humans if h.home_x == x and h.home_y == y]
         workplaces = [w for w in self.world.workplaces if (x, y) in w.blocks]
-        if not buildings and not residents and not workplaces:
-            messagebox.showinfo("Block", f"Block ({x}, {y}) är tomt.")
-            return
+        workers = [h for h in self.world.humans if any(h.job_id == w.id for w in workplaces)]
         people = {h.id: h for h in self.world.humans}
-        lines = [f"Adress: block ({x}, {y})"]
-        for building in buildings:
+        building = buildings[0] if buildings else None
+        display_kind = (self.world._home_type(building) if building and building.kind == "Bostad"
+                        else building.kind if building else "Obebyggd mark")
+        self.block_window.title(f"Block ({x}, {y}) · {display_kind}")
+        self.block_content.grid_columnconfigure(0, weight=2)
+        self.block_content.grid_columnconfigure(1, weight=3)
+        self.block_content.grid_rowconfigure(0, weight=1)
+
+        overview = ctk.CTkFrame(self.block_content, fg_color=PANEL, corner_radius=12)
+        overview.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        ctk.CTkLabel(overview, text=display_kind.upper(), text_color=ACCENT,
+                     font=ctk.CTkFont(size=22, weight="bold")).pack(padx=14, pady=(14, 4))
+        ctk.CTkLabel(overview, text=f"BLOCK {x}, {y}", text_color=MUTED).pack()
+        if building:
+            image = self.sprites.building(display_kind, (340, 250))
+            ctk.CTkLabel(overview, text="", image=image).pack(fill=tk.X, padx=12, pady=10)
+        else:
+            ctk.CTkLabel(overview, text="Tom mark", height=180, text_color=MUTED).pack(fill=tk.X)
+
+        facts = []
+        if building:
             owner = people.get(building.owner_id)
-            building_name = (self.world._home_type(building) if building.kind == "Bostad"
-                             else building.kind)
-            lines += ["", f"Byggnad: {building_name}",
-                      f"Ägare: {owner.name if owner else 'Kommunen/ingen'}",
-                      f"Nivå: {building.level}", f"Centralitet: {building.centrality:.1f}"]
+            facts += [f"Ägare: {owner.name if owner else 'Kommunen / ingen'}",
+                      f"Nivå: {building.level}    Centralitet: {building.centrality:.1f}"]
             if building.kind == "Bostad":
-                lines.append(f"Boendekapacitet: {self.world._private_home_capacity(building)}")
+                capacity = self.world._private_home_capacity(building)
+                facts.append(f"Boende: {len(residents)}/{capacity} platser")
             elif building.kind in ("Flerfamiljshus", "Hotell"):
-                lines.append(f"Boendeplatser: {building.housing_units}")
+                facts.append(f"Boende: {len(residents)}/{building.housing_units} platser")
         for workplace in workplaces:
             owner = people.get(workplace.owner_id)
-            activity = workplace.service_name or workplace.kind
-            lines += ["", f"Verksamhet: {activity} (ID {workplace.id})",
-                      f"Företagare: {owner.name if owner else '-'}",
-                      f"Anställda: {workplace.employed}/{workplace.capacity}",
-                      f"Kassa: {workplace.money} SM", f"Senaste resultat: {workplace.monthly_profit} SM"]
-        if residents:
-            lines += ["", f"Boende här ({len(residents)}):"]
-            lines.extend(f"• {h.name} – {'arbetslös' if h.job_id is None else 'jobb ID '+str(h.job_id)}"
-                         for h in residents[:20])
-            if len(residents) > 20: lines.append(f"… och {len(residents)-20} till")
-        messagebox.showinfo("Undersök block", "\n".join(lines))
+            facts += ["", f"{workplace.service_name or workplace.kind} · verksamhet {workplace.id}",
+                      f"Ägare: {owner.name if owner else 'Kommunen'}",
+                      f"Jobb: {workplace.employed}/{workplace.capacity}",
+                      f"Kassa: {workplace.money} SM    Resultat: {workplace.monthly_profit:+} SM"]
+        ctk.CTkLabel(overview, text="\n".join(facts) or "Ingen verksamhet på platsen",
+                     anchor="w", justify="left", text_color=INK).pack(fill=tk.X, padx=18, pady=(0, 14))
+
+        right = ctk.CTkScrollableFrame(self.block_content, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self._block_impact_panel(right, building, workplaces, residents, workers)
+        self._people_panel(right, "BOR HÄR", residents)
+        workplace_residents = [h for h in workers if h not in residents]
+        self._people_panel(right, "ARBETAR HÄR", workplace_residents)
+
+    def _block_impact_panel(self, parent, building, workplaces, residents, workers):
+        card = ctk.CTkFrame(parent, fg_color=PANEL_RAISED, corner_radius=10)
+        card.pack(fill=tk.X, pady=(0, 10))
+        ctk.CTkLabel(card, text="VARFÖR SPELAR BLOCKET ROLL?", text_color=ACCENT,
+                     font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=14, pady=(12, 5))
+        impacts = []
+        if building:
+            kind = building.kind
+            if kind in ("Bostad", "Flerfamiljshus"): impacts.append(f"+ Ger hem åt {len(residents)} invånare och minskar hemlöshet")
+            if kind == "Hotell": impacts.append("+ Tar emot nyinflyttade innan de får permanent bostad")
+            if kind == "Jordbruk": impacts.append("+ Producerar lokal mat och gör fortsatt inflyttning möjlig")
+            if kind in ("Centrum", "Torg"): impacts.append("+ Höjer områdets centralitet och drar service närmare")
+            if kind in self.world.services: impacts.append("+ Samhällsservice skapar både välfärd och kommunala jobb")
+            if kind == "Industri": impacts.append("+ Många jobb och högre löner, men dyr placering nära bostäder")
+        if workplaces:
+            impacts.append(f"+ {sum(w.employed for w in workplaces)} löner förs ut i hushållsekonomin varje månad")
+            profit = sum(w.monthly_profit for w in workplaces)
+            impacts.append(f"{'+' if profit >= 0 else '−'} Verksamheternas senaste netto är {profit:+} SM")
+        impacts.append(f"• {len(residents)} boende och {len(workers)} arbetande är direkt knutna hit")
+        ctk.CTkLabel(card, text="\n".join(impacts), anchor="w", justify="left",
+                     wraplength=500, text_color=INK).pack(fill=tk.X, padx=14, pady=(0, 12))
+
+    def _people_panel(self, parent, title, humans):
+        card = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=10)
+        card.pack(fill=tk.X, pady=(0, 10))
+        ctk.CTkLabel(card, text=f"{title} · {len(humans)}", text_color=MUTED,
+                     font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=14, pady=(10, 5))
+        if not humans:
+            ctk.CTkLabel(card, text="Ingen", text_color=MUTED).pack(anchor="w", padx=14, pady=(0, 10))
+            return
+        for human in humans[:30]:
+            workplace = next((w for w in self.world.workplaces if w.id == human.job_id), None)
+            role = (workplace.service_name or workplace.kind) if workplace else ("Pensionär" if human.retired else "Arbetslös")
+            row = ctk.CTkButton(card, height=38, fg_color=PANEL_RAISED, hover_color="#263b53",
+                                anchor="w", text=f"{human.name}   ·   {role}   ·   {human.money} SM",
+                                command=lambda hid=human.id: self._show_citizen(hid))
+            row.pack(fill=tk.X, padx=10, pady=3)
+        if len(humans) > 30:
+            ctk.CTkLabel(card, text=f"… och {len(humans)-30} till", text_color=MUTED).pack(pady=6)
 
     def _render_world(self):
         self.canvas.delete("all")
@@ -1040,6 +1198,23 @@ class App(ctk.CTk):
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="#c8e4ff", width=width)
             else:
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+            if building.active and cell >= 14:
+                display_kind = self.world._home_type(building) if building.kind == "Bostad" else building.kind
+                sprite = self.sprites.canvas_building(display_kind, max(10, cell-2))
+                if sprite:
+                    self.canvas.create_image((x1+x2)/2, (y1+y2)/2, image=sprite)
+            if self.selected_block == (building.x, building.y):
+                self.canvas.create_rectangle(
+                    start_x+building.x*cell, start_y+building.y*cell,
+                    start_x+(building.x+1)*cell, start_y+(building.y+1)*cell,
+                    outline=ACCENT, width=max(2, cell//7),
+                )
+
+        self.canvas.create_text(
+            start_x+8, start_y+grid_px-8,
+            text="Klicka på ett block för kvartersvy",
+            fill=MUTED, anchor="sw", font=("Consolas", 10),
+        )
 
 if __name__ == "__main__":
     ctk.set_appearance_mode("dark")
