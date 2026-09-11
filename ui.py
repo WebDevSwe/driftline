@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -96,10 +97,14 @@ class App(ctk.CTk):
         self.block_content = None
         self.selected_block = None
         self.citizens_page = 0
-        self._citizens_tick_counter = 0
+        self._citizens_render_signature = None
+        self._tick_after_id = None
+        self._render_after_id = None
+        self._world_render_signature = None
+        self._last_auxiliary_refresh = 0.0
 
         self._build_menus()
-        self.bind("<Configure>", lambda _event: self._render_world())
+        self.bind("<Configure>", self._schedule_world_render)
         self.after(50, self._open_start_dialog)
 
     def _build_menus(self):
@@ -186,7 +191,10 @@ class App(ctk.CTk):
         self.running = not self.running
         self.play_button.configure(text="❚❚" if self.running else "▶")
         if self.running:
-            self._tick()
+            self._queue_tick(0)
+        elif self._tick_after_id is not None:
+            self.after_cancel(self._tick_after_id)
+            self._tick_after_id = None
 
     def _set_speed(self, value):
         if value == "Normal":
@@ -195,23 +203,33 @@ class App(ctk.CTk):
             self.speed_multiplier = 2
         else:
             self.speed_multiplier = 3
+        if self.running:
+            if self._tick_after_id is not None:
+                self.after_cancel(self._tick_after_id)
+                self._tick_after_id = None
+            self._queue_tick()
+
+    def _queue_tick(self, delay=None):
+        if not self.running or not self.world or self._tick_after_id is not None:
+            return
+        tick_ms = max(200, int(BASE_TICK_MS / self.speed_multiplier)) if delay is None else delay
+        self._tick_after_id = self.after(tick_ms, self._tick)
 
     def _tick(self):
+        self._tick_after_id = None
         if not self.running or not self.world:
             return
         self.world.advance_month()
         self._render_world()
         self._update_status()
-        self._update_stats_window()
-        self._update_budget_window()
-        self._update_block_window()
-        self._citizens_tick_counter += 1
-        has_pinned = any(h.pinned for h in self.world.humans)
-        if has_pinned or self._citizens_tick_counter >= 24:
-            self._citizens_tick_counter = 0
+        now = time.monotonic()
+        if now - self._last_auxiliary_refresh >= 0.75:
+            self._last_auxiliary_refresh = now
+            self._update_stats_window()
+            self._update_budget_window()
+            # Detaljerna kan följas live utan att den klickbara listan byggs om.
             self._update_citizens_window()
-        tick_ms = max(200, int(BASE_TICK_MS / self.speed_multiplier))
-        self.after(tick_ms, self._tick)
+        self._queue_tick()
 
     def _update_status(self):
         if not self.world:
@@ -389,7 +407,7 @@ class App(ctk.CTk):
             return
         if self.citizens_window and self.citizens_window.winfo_exists():
             self.citizens_window.lift()
-            self._update_citizens_window()
+            self._update_citizens_window(force_list=True)
             return
         window = ctk.CTkToplevel(self)
         window.title("Invånare")
@@ -432,8 +450,12 @@ class App(ctk.CTk):
         controls.pack(fill=tk.X, padx=16, pady=(0, 12))
         ctk.CTkButton(controls, text="◀", width=40, command=self._prev_citizens_page).pack(side=tk.LEFT)
         ctk.CTkButton(controls, text="▶", width=40, command=self._next_citizens_page).pack(side=tk.LEFT, padx=(8, 0))
+        ctk.CTkButton(
+            controls, text="Uppdatera listan", width=140,
+            command=lambda: self._update_citizens_window(force_list=True),
+        ).pack(side=tk.RIGHT)
 
-        self._update_citizens_window()
+        self._update_citizens_window(force_list=True)
 
     def _energy_color(self, energy):
         ratio = max(0.0, min(1.0, energy / 100))
@@ -458,12 +480,12 @@ class App(ctk.CTk):
                 "job": workplace.kind if workplace else None,
                 "home": human.home_kind, "hungry": human.hungry,
             })
-        self._update_citizens_window()
+        self._update_citizens_window(force_list=True)
 
     def _prev_citizens_page(self):
         if self.citizens_page > 0:
             self.citizens_page -= 1
-            self._update_citizens_window()
+            self._update_citizens_window(force_list=True)
 
     def _next_citizens_page(self):
         if not self.world:
@@ -471,47 +493,48 @@ class App(ctk.CTk):
         max_page = max(0, (len(self.world.humans) - 1) // 10)
         if self.citizens_page < max_page:
             self.citizens_page += 1
-            self._update_citizens_window()
+            self._update_citizens_window(force_list=True)
 
-    def _update_citizens_window(self):
+    def _update_citizens_window(self, force_list=False):
         if not self.world or not self.citizens_window or not self.citizens_window.winfo_exists():
             return
         if not self.citizens_frame or not self.citizen_detail:
             return
 
-        for child in self.citizens_frame.winfo_children():
-            child.destroy()
-
-        selected = None
         start = self.citizens_page * 10
         end = start + 10
         pinned = [h for h in self.world.humans if h.pinned]
         page = [h for h in self.world.humans[start:end] if not h.pinned]
-        for h in pinned + page:
-            row = ctk.CTkFrame(self.citizens_frame, fg_color="transparent")
-            row.pack(fill=tk.X, pady=2)
+        visible = pinned + page
+        list_signature = (self.citizens_page, tuple((h.id, h.pinned) for h in visible))
+        if force_list or list_signature != self._citizens_render_signature:
+            for child in self.citizens_frame.winfo_children():
+                child.destroy()
+            for h in visible:
+                row = ctk.CTkFrame(self.citizens_frame, fg_color="transparent")
+                row.pack(fill=tk.X, pady=2)
 
-            dot = tk.Canvas(row, width=12, height=12, highlightthickness=0, bg="#0f1115")
-            dot.pack(side=tk.LEFT, padx=(0, 6))
-            color = self._energy_color(h.energy)
-            dot.create_oval(2, 2, 10, 10, fill=color, outline="")
+                dot = tk.Canvas(row, width=12, height=12, highlightthickness=0, bg="#0f1115")
+                dot.pack(side=tk.LEFT, padx=(0, 6))
+                color = self._energy_color(h.energy)
+                dot.create_oval(2, 2, 10, 10, fill=color, outline="")
 
-            name_btn = ctk.CTkButton(
-                row,
-                text=f"★ {h.name}" if h.pinned else h.name,
-                width=140,
-                command=lambda hid=h.id: self._select_citizen(hid),
-            )
-            name_btn.pack(side=tk.LEFT, padx=(0, 6))
+                name_btn = ctk.CTkButton(
+                    row,
+                    text=f"★ {h.name}" if h.pinned else h.name,
+                    width=140,
+                    command=lambda hid=h.id: self._select_citizen(hid),
+                )
+                name_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-            status = "Sjuk" if h.sick else "Hungrig" if h.hungry else "Ok"
-            row_job = next((w for w in self.world.workplaces if w.id == h.job_id), None)
-            ctk.CTkLabel(
-                row, text=f"{status} | {(row_job.service_name or row_job.kind) if row_job else ('Pensionär' if h.retired else 'Arbetslös')} | {h.money} SM"
-            ).pack(side=tk.LEFT)
+                status = "Sjuk" if h.sick else "Hungrig" if h.hungry else "Ok"
+                row_job = next((w for w in self.world.workplaces if w.id == h.job_id), None)
+                ctk.CTkLabel(
+                    row, text=f"{status} | {(row_job.service_name or row_job.kind) if row_job else ('Pensionär' if h.retired else 'Arbetslös')} | {h.money} SM"
+                ).pack(side=tk.LEFT)
+            self._citizens_render_signature = list_signature
 
-            if self.selected_human_id == h.id:
-                selected = h
+        selected = next((h for h in self.world.humans if h.id == self.selected_human_id), None)
 
         if selected is None and self.world.humans:
             selected = self.world.humans[0]
@@ -650,10 +673,14 @@ class App(ctk.CTk):
                         f"  M{entry['month']}: {entry['decision']}"
                         for entry in decisions[-6:]
                     )+"\n"
-            self.citizen_detail.configure(state="normal")
-            self.citizen_detail.delete("1.0", tk.END)
-            self.citizen_detail.insert("1.0", detail)
-            self.citizen_detail.configure(state="disabled")
+            current_detail = self.citizen_detail.get("1.0", "end-1c")
+            if current_detail != detail.rstrip("\n"):
+                scroll_position = self.citizen_detail.yview()[0]
+                self.citizen_detail.configure(state="normal")
+                self.citizen_detail.delete("1.0", tk.END)
+                self.citizen_detail.insert("1.0", detail)
+                self.citizen_detail.configure(state="disabled")
+                self.citizen_detail.yview_moveto(scroll_position)
             if self.pin_button:
                 self.pin_button.configure(text="Ta bort nål" if selected.pinned else "Nåla fast")
 
@@ -1134,6 +1161,7 @@ class App(ctk.CTk):
         y = int((event.y-start_y)//cell)
         if not (0 <= x < grid_size and 0 <= y < grid_size): return
         self.selected_block = (x, y)
+        self._render_world()
         self._open_block_window()
 
     def _open_block_window(self):
@@ -1148,8 +1176,14 @@ class App(ctk.CTk):
         window.minsize(840, 600)
         window.transient(self)
         self.block_window = window
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.pack(fill=tk.X, padx=16, pady=(12, 0))
+        ctk.CTkButton(
+            controls, text="Uppdatera kvarteret", width=160,
+            command=self._update_block_window,
+        ).pack(side=tk.RIGHT)
         self.block_content = ctk.CTkFrame(window, fg_color="transparent")
-        self.block_content.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        self.block_content.pack(fill=tk.BOTH, expand=True, padx=16, pady=(8, 16))
         self._update_block_window()
 
     def _show_citizen(self, human_id):
@@ -1269,9 +1303,23 @@ class App(ctk.CTk):
         if len(humans) > 30:
             ctk.CTkLabel(card, text=f"… och {len(humans)-30} till", text_color=MUTED).pack(pady=6)
 
+    def _schedule_world_render(self, event):
+        # Configure events also bubble up from child widgets. Only the main
+        # window's size affects the map, and a resize should result in one draw.
+        if event.widget is not self:
+            return
+        if self._render_after_id is not None:
+            self.after_cancel(self._render_after_id)
+        self._render_after_id = self.after(80, self._run_scheduled_world_render)
+
+    def _run_scheduled_world_render(self):
+        self._render_after_id = None
+        self._render_world()
+
     def _render_world(self):
-        self.canvas.delete("all")
         if not self.world:
+            self.canvas.delete("all")
+            self._world_render_signature = None
             return
 
         grid_size = self.world.grid_size
@@ -1281,6 +1329,18 @@ class App(ctk.CTk):
         start_x = (self.winfo_width() - grid_px) // 2
         start_y = self.statusbar.winfo_height() + (self.winfo_height() - self.statusbar.winfo_height() - grid_px) // 2
         self._grid_geometry = (start_x, start_y, cell, grid_size)
+        visual_buildings = tuple(
+            (building.x, building.y, building.kind, building.active, building.level, building.color)
+            for building in self.world.buildings
+        )
+        render_signature = (
+            id(self.world), start_x, start_y, cell, grid_size,
+            self.selected_block, visual_buildings,
+        )
+        if render_signature == self._world_render_signature:
+            return
+        self._world_render_signature = render_signature
+        self.canvas.delete("all")
 
         for i in range(grid_size + 1):
             x = start_x + i * cell
