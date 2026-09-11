@@ -61,6 +61,14 @@ class Human:
     last_living_cost: int = 0
     financial_stress_months: int = 0
     recent_purchases: list[dict] = field(default_factory=list)
+    education_level: float = 0.0
+    dependents: int = 0
+    healthcare_visits: int = 0
+    crime_victimizations: int = 0
+    school_months: int = 0
+    childcare_months: int = 0
+    childcare_access: bool = False
+    last_events: list[str] = field(default_factory=list)
 
 @dataclass
 class Workplace:

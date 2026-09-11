@@ -115,6 +115,15 @@ lokaler, personal, betald drift och geografisk tillgänglighet från invånarnas
 adresser. Avtagande marginalnytta gör dessutom att 100 procent minskar risker
 utan att garantera noll kriminalitet, noll sjukdom eller perfekt service.
 
+Effekten landar därefter hos enskilda invånare och byggnader. Sjukvården ger
+sjuka en bättre men aldrig säker chans till återhämtning, polisen minskar den
+lokala risken att utsättas för brott och brandkårens närhet minskar brandrisken.
+Skolan bygger gradvis kompetens hos yngre invånare, vilket ger en liten fördel
+i kvalificerade service- och industrijobb. Barnomsorg ger hushåll med barn mer
+vardagsork och mindre press. Personvyn visar månadens konkreta händelser och
+ackumulerade vård-, brotts-, utbildnings- och barnomsorgserfarenheter. Samma
+utfall går att följa som tidsserier i statistikfönstret.
+
 Inkomstskatten hålls inne från varje faktisk månadslön och förs direkt till
 kommunen. Den skapar därmed inte längre kommunala pengar utan en motsvarande
 kostnad för löntagaren. Prognosen inkluderar full utlovad A-kassa men inte

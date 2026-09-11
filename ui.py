@@ -352,6 +352,7 @@ class App(ctk.CTk):
                 "Boende i bostad", "Arbetsplatser", "Jordbruk", "Byggnader",
                 "Hotellgäster", "Hotellplatser", "Cyklar", "Bussresenärer", "Bilar",
                 "Pensionärer", "Dödsfall", "Pensionskapital",
+                "Vårdade", "Brottsutsatta", "Bränder", "Studerande", "Barnomsorg",
                 "Centrumyta", "Dragningskraft", "Kriminalitet", "Kommunens pengar",
                 "Utgifter", "A-kassa", "Total ekonomi", "Penningmängd",
                 "Servicetäckning", "Serviceeffekt", "Extern balans", "Bokföringsavvikelse",
@@ -562,10 +563,12 @@ class App(ctk.CTk):
                      f"Inkomst denna månad    {selected.last_income:>6} SM",
                      f"Levnadskostnad         {selected.last_living_cost:>6} SM",
                      f"Mat / energi / hälsa   {selected.food} / {selected.energy} / {selected.health}",
+                     f"Kompetens              {selected.education_level:>6.1f}/100",
                      f"Missnöje                {selected.dissatisfaction:>6.0f}/100"]
             if selected.sick: lines.append("Status: Sjuk")
             if selected.hungry: lines.append("Status: Hungrig")
             if selected.retired: lines.append("Status: Pensionär")
+            if selected.dependents: lines.append(f"Omsorgsansvar: {selected.dependents} barn")
             if selected.loan_balance: lines.append(f"Lån: {selected.loan_balance} SM")
             lines += ["", "BOENDE OCH ÄGANDE", f"Boende: {selected.home_kind}", f"Adress: {address}"]
             if selected.home_owner_id == selected.id and selected.home_kind in HOME_RUNNING_COSTS:
@@ -592,6 +595,14 @@ class App(ctk.CTk):
                       f"Pensionskapital: {selected.pension_balance} SM",
                       f"Statusinköp: {selected.status_items}",
                       f"Fritidsköp: {selected.leisure_items}"]
+            if selected.healthcare_visits:
+                lines.append(f"Vårdtillfällen: {selected.healthcare_visits}")
+            if selected.crime_victimizations:
+                lines.append(f"Brottsutsatt: {selected.crime_victimizations} gånger")
+            if selected.school_months:
+                lines.append(f"Utbildningsmånader: {selected.school_months}")
+            if selected.childcare_months:
+                lines.append(f"Barnomsorgsmånader: {selected.childcare_months}")
             if selected.recent_purchases:
                 lines.append("Senaste transaktioner:")
                 lines.extend(
@@ -607,6 +618,8 @@ class App(ctk.CTk):
             if selected.job_id is not None: influences.append("+ Arbete ger lön och pensionsavsättning")
             if selected.home_kind not in ("Tält", "Bostadslös"): influences.append("+ Fast boende ger trygghet")
             if not influences: influences.append("• Inga starka individuella påverkansfaktorer just nu")
+            if selected.last_events:
+                influences.extend(f"• Denna månad: {event}" for event in selected.last_events)
             lines += ["", "VARFÖR MÅR PERSONEN SÅ HÄR?", *influences]
             detail = "\n".join(lines)+"\n"
             if selected.personal_history:
@@ -639,6 +652,9 @@ class App(ctk.CTk):
             "Hotellgäster": "hotel_guests", "Hotellplatser": "hotel_rooms",
             "Cyklar": "bikes", "Bussresenärer": "bus_users", "Bilar": "cars",
             "Pensionärer": "retired", "Dödsfall": "deaths", "Pensionskapital": "pension_assets",
+            "Vårdade": "healthcare_treated", "Brottsutsatta": "crime_victims",
+            "Bränder": "fire_incidents", "Studerande": "students_supported",
+            "Barnomsorg": "childcare_supported",
             "Centrumyta": "central_area", "Dragningskraft": "attractiveness",
             "Kriminalitet": "crime", "Kommunens pengar": "money",
             "Utgifter": "expenses",
@@ -673,6 +689,11 @@ class App(ctk.CTk):
                 "bus_users": snapshot["transport_modes"].get("Buss", 0),
                 "retired": snapshot["retired"], "deaths": self.world.last_deaths,
                 "pension_assets": self.world.central_bank.pension_assets,
+                "healthcare_treated": self.world.last_healthcare_treated,
+                "crime_victims": self.world.last_crime_victims,
+                "fire_incidents": self.world.last_fire_incidents,
+                "students_supported": self.world.last_students_supported,
+                "childcare_supported": self.world.last_childcare_supported,
                 "money_supply": self.world.last_money_supply,
                 "external_balance": self.world.last_external_inflow-self.world.last_external_outflow,
                 "money_discrepancy": self.world.last_money_discrepancy,
@@ -721,6 +742,14 @@ class App(ctk.CTk):
             f"Flytt denna månad: +{self.world.last_arrivals}/-{self.world.last_departures}    "
             f"Pensionärer: {stats['retired']}    Dödsfall: {self.world.last_deaths}\n"
             f"Dragningskraft: {self.world.attractiveness:.0f}    Kriminalitet: {self.world.crime_rate:.0f}\n\n"
+            "SERVICEUTFALL DENNA MÅNAD\n"
+            f"Vårdade: {self.world.last_healthcare_treated}    "
+            f"Brottsutsatta: {self.world.last_crime_victims}    "
+            f"Bränder: {self.world.last_fire_incidents}    "
+            f"Utbildning: {self.world.last_students_supported}    "
+            f"Barnomsorg: {self.world.last_childcare_supported}\n"
+            f"Genomsnittlig kompetens: {stats['average_education']}    "
+            f"Barn i hushållen: {stats['dependents']}\n\n"
             "MAT OCH ARBETE\n"
             f"Mat tillgänglig: {self.world.last_food_supply:<7} Mat såld: {self.world.last_food_sold:<7} "
             f"Mat i gårdslager: {stats['food_stored']}\n"

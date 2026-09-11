@@ -113,6 +113,8 @@ class World:
             "pension_assets", "hotel_guests", "hotel_rooms",
             "money_supply", "external_balance", "money_discrepancy",
             "service_coverage", "service_effectiveness",
+            "healthcare_treated", "crime_victims", "fire_incidents",
+            "students_supported", "childcare_supported",
         )
         self.history, self.history_year = {k: [] for k in keys}, {k: [] for k in keys}
         self.last_revenue = self.last_hungry = self.last_sick = self.last_unemployed = 0
@@ -136,6 +138,9 @@ class World:
         self.last_external_inflow = self.last_external_outflow = 0
         self.last_money_discrepancy = 0
         self.last_money_supply = 0
+        self.last_healthcare_treated = self.last_crime_victims = 0
+        self.last_fire_incidents = self.last_students_supported = 0
+        self.last_childcare_supported = 0
         self._month_external_inflow = self._month_external_outflow = 0
         self.centrality: dict[tuple[int, int], float] = {}
         self._rng = random.Random(42)
@@ -162,6 +167,10 @@ class World:
         h = Human(self.next_human_id, self._starting_capital(), self._random_name(),
                   self._rng.randint(18, 35), self._random_drive(), food=40)
         h.housing_ambition = round(self._rng.uniform(.75, 1.25), 2)
+        # Stable variation without consuming the world's random event stream.
+        h.education_level = 15+(h.id*17+h.age*3)%46
+        if 22 <= h.age <= 35:
+            h.dependents = (h.id*7+h.age)%3 if h.id%3 else 0
         if h.drive in ("sparsam", "status"): h.housing_ambition += .2
         if h.drive == "tältliv": h.housing_ambition -= .35
         self.next_human_id += 1
@@ -173,6 +182,7 @@ class World:
         self._month_external_inflow = self._month_external_outflow = 0
         for human in self.humans:
             human.last_income = human.last_living_cost = 0
+            human.last_events = []
         self.central_bank.last_pension_contributions = 0
         self.central_bank.last_pension_payouts = 0
         self.central_bank.last_interest_income = 0
@@ -192,6 +202,7 @@ class World:
         self.last_hungry = hungry
         self._apply_bank_interest_and_loans(); self._apply_public_budget()
         self._update_service_capacity()
+        self._apply_service_outcomes()
         self._update_dissatisfaction(); self._update_population(self.season(), self.money - self.expenses, hungry)
         self._cleanup_abandoned_workplaces(); self._update_centrality()
         self._reconcile_money(opening_supply)
@@ -230,6 +241,11 @@ class World:
                                       /max(1, len(active_service_states)), 1),
             "service_effectiveness": round(100*sum(s.effectiveness for s in active_service_states)
                                            /max(1, len(active_service_states)), 1),
+            "healthcare_treated": self.last_healthcare_treated,
+            "crime_victims": self.last_crime_victims,
+            "fire_incidents": self.last_fire_incidents,
+            "students_supported": self.last_students_supported,
+            "childcare_supported": self.last_childcare_supported,
             "hotel_guests": snapshot["hotel_guests"],
             "hotel_rooms": snapshot["hotel_rooms"],
         }
@@ -294,6 +310,9 @@ class World:
             "hotel_guests": sum(h.home_kind == "Hotell" for h in self.humans),
             "hotel_rooms": self._temporary_housing_capacity(),
             "home_types": home_types,
+            "average_education": round(sum(h.education_level for h in self.humans)
+                                       /max(1, len(self.humans)), 1),
+            "dependents": sum(h.dependents for h in self.humans),
         }
 
     def _record_pinned_humans(self):
@@ -306,6 +325,8 @@ class World:
                 "health": human.health, "energy": human.energy,
                 "job": (workplace.service_name or workplace.kind) if workplace else None,
                 "home": human.home_kind, "hungry": human.hungry,
+                "education": human.education_level,
+                "events": list(human.last_events),
             })
             if len(human.personal_history) > 600:
                 human.personal_history = human.personal_history[-600:]
@@ -442,6 +463,8 @@ class World:
         if h.drive == "lantbruk" and kind == "Jordbruk": value *= 2.5
         if h.drive == "status" and kind in ("Service", "Industri"): value *= 1.2
         if h.drive == "företagare" and kind == "Hotell": value *= 1.2
+        if kind in ("Service", "Industri"):
+            value *= .8+min(100, h.education_level)/200
         return value
 
     def _spawn_new_businesses(self):
@@ -719,8 +742,9 @@ class World:
 
     def _wage_for(self, human, workplace):
         if workplace.service_name:
-            return workplace.wage
-        return max(20, min(1000, workplace.wage+min(100, human.status_items*2)))
+            return workplace.wage+min(5, int(human.education_level//20))
+        skill_bonus = min(5, int(human.education_level//20)) if workplace.kind in ("Service", "Industri") else 0
+        return max(20, min(1000, workplace.wage+skill_bonus+min(100, human.status_items*2)))
 
     def _can_commute(self, human, workplace):
         if workplace.kind == "Jordbruk" and workplace.owner_id == human.id: return True
@@ -1096,6 +1120,8 @@ class World:
             pressure = (4 if h.hungry else -2)+(2 if jobless else -1)
             pressure += 2 if h.home_kind == "Bostadslös" else 1 if h.home_kind == "Tält" else -1
             pressure += 2 if self.stability < 45 else -1
+            if h.dependents:
+                pressure += -1 if h.childcare_access else (1 if jobless else 0)
             pressure += max(0, math.ceil((self.tax_rate-.25)*12))
             h.unemployed_months = h.unemployed_months+1 if jobless else 0
             if h.unemployed_months >= 12: pressure += min(5, h.unemployed_months//12)
@@ -1460,6 +1486,104 @@ class World:
             access += 1/(1+distance/max(4, travel_range))
         return access/len(self.humans)
 
+    def _individual_service_effect(self, human, name):
+        state = self.service_states[name]
+        buildings = self._service_buildings(name)
+        if not buildings or state.staffed <= 0 or state.supply_ratio <= 0:
+            return 0.0
+        if human.home_x is None or human.home_y is None:
+            access = .35
+        else:
+            distance = min(abs(human.home_x-b.x)+abs(human.home_y-b.y) for b in buildings)
+            travel_range = TRANSPORT_MODES[self._transport_mode(human)]["range"]
+            access = 1/(1+distance/max(4, travel_range))
+        delivered = state.staffed*state.supply_ratio
+        return (1-math.exp(-2*delivered/max(.01, state.demand)))*access
+
+    def _building_service_effect(self, building, name):
+        state = self.service_states[name]
+        service_buildings = self._service_buildings(name)
+        if not service_buildings or state.staffed <= 0 or state.supply_ratio <= 0:
+            return 0.0
+        distance = min(abs(building.x-b.x)+abs(building.y-b.y) for b in service_buildings)
+        access = 1/(1+distance/12)
+        delivered = state.staffed*state.supply_ratio
+        return (1-math.exp(-2*delivered/max(.01, state.demand)))*access
+
+    def _apply_service_outcomes(self):
+        self.last_healthcare_treated = self.last_crime_victims = 0
+        self.last_fire_incidents = self.last_students_supported = 0
+        self.last_childcare_supported = 0
+        for human in self.humans:
+            human.childcare_access = False
+
+            healthcare = self._individual_service_effect(human, "Sjukvård")
+            illness_risk = .004+max(0, human.age-55)*.00035
+            illness_risk += .012 if human.home_kind in ("Tält", "Bostadslös") else 0
+            if self._rng.random() < illness_risk:
+                damage = self._rng.randint(4, 12)
+                human.health = max(0, human.health-damage)
+                human.sick = True
+                human.last_events.append(f"Blev sjuk (−{damage} hälsa)")
+            treatment_chance = .05+.65*healthcare
+            if human.sick and self._rng.random() < treatment_chance:
+                recovery = max(2, round(4+10*healthcare))
+                human.health = min(100, human.health+recovery)
+                human.energy = min(100, human.energy+max(1, recovery//3))
+                human.healthcare_visits += 1
+                self.last_healthcare_treated += 1
+                human.last_events.append(f"Fick vård (+{recovery} hälsa)")
+
+            police = self._individual_service_effect(human, "Polis")
+            victim_risk = max(.0005, self.crime_rate/100*.025*(1-.70*police))
+            if self._rng.random() < victim_risk:
+                loss = min(human.money, self._rng.randint(2, 12))
+                human.money -= loss
+                human.crime_victimizations += 1
+                human.dissatisfaction = min(100, human.dissatisfaction+6)
+                self.last_crime_victims += 1
+                human.last_events.append(f"Utsatt för brott (−{loss} SM)")
+                self._record_transaction("Brottsförlust", loss, "Invånare", human.id,
+                                         "Extern", None, human.name)
+
+            school = self._individual_service_effect(human, "Skola")
+            if human.age <= 35 and self._rng.random() < .35*school:
+                gain = round(.5+school, 2)
+                human.education_level = min(100, human.education_level+gain)
+                human.school_months += 1
+                self.last_students_supported += 1
+                human.last_events.append(f"Utbildning (+{gain:.1f} kompetens)")
+
+            childcare = self._individual_service_effect(human, "Barnomsorg")
+            if human.dependents and self._rng.random() < childcare:
+                human.childcare_access = True
+                human.childcare_months += 1
+                human.energy = min(100, human.energy+2)
+                self.last_childcare_supported += 1
+                human.last_events.append("Fick barnomsorg och mer vardagsork")
+
+            human.sick = human.health < 40 or human.energy < 20
+
+        candidates = [b for b in self.buildings if b.active and b.kind not in ("Torg", "Centrum")]
+        for building in candidates:
+            fire_service = self._building_service_effect(building, "Brandkår")
+            base_risk = .003 if building.kind == "Industri" else .001
+            if self._rng.random() >= base_risk*(1-.80*fire_service):
+                continue
+            self.last_fire_incidents += 1
+            repair_cost = 12
+            owner = next((h for h in self.humans if h.id == building.owner_id), None)
+            if owner:
+                paid = min(owner.money, repair_cost)
+                owner.money -= paid
+                owner.dissatisfaction = min(100, owner.dissatisfaction+4)
+                owner.last_events.append(f"Brandskada på fastighet (−{paid} SM)")
+                self._record_transaction("Brandskada", paid, "Invånare", owner.id,
+                                         "Extern", None, f"Block ({building.x}, {building.y})")
+            else:
+                self.stability = max(0, self.stability-1)
+        self.last_sick = sum(h.sick for h in self.humans)
+
     def _service_operating_requests(self):
         requests = {}
         for name in self.services:
@@ -1646,7 +1770,8 @@ class World:
                 "last_tax_revenue", "last_development_revenue", "last_public_investment",
                 "last_public_payroll", "last_deaths", "last_retirements", "population_events",
                 "last_external_inflow", "last_external_outflow", "last_money_discrepancy",
-                "last_money_supply")
+                "last_money_supply", "last_healthcare_treated", "last_crime_victims",
+                "last_fire_incidents", "last_students_supported", "last_childcare_supported")
         data = {k: getattr(self, k) for k in keys}
         data.update(buildings=[b.__dict__ for b in self.buildings], humans=[h.__dict__ for h in self.humans],
                     workplaces=[w.__dict__ for w in self.workplaces],

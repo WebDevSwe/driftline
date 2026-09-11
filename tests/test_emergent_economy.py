@@ -566,7 +566,8 @@ def test_public_services_create_population_scaled_paid_jobs():
 
     assert school.capacity == 5
     assert school.employed == 5
-    assert world.last_public_payroll == 5*school.wage
+    paid_wages = sum(t.amount for t in world.transactions if t.category == "Kommunal finansiering")
+    assert world.last_public_payroll == paid_wages
     assert world.money == 10000-world.last_public_investment-world.last_public_payroll
 
 
@@ -748,3 +749,64 @@ def test_service_capacity_survives_save_and_load():
 
     assert loaded.service_states["Skola"].staffed == school.capacity
     assert loaded.service_states["Skola"].effectiveness == world.service_states["Skola"].effectiveness
+
+
+def test_healthcare_can_treat_an_individual_without_guaranteeing_recovery():
+    world = make_world()
+    patient = world.humans[0]
+    world.humans = [patient]
+    world.population = 1
+    patient.health = 25
+    patient.sick = True
+    patient.dependents = 0
+    patient.home_x = patient.home_y = 3
+    world.services["Sjukvård"] = True
+    world.service_funding["Sjukvård"] = 100
+    world.buildings.append(Building(3, 3, "#f2f2f2", "Sjukvård", service_name="Sjukvård"))
+    world._sync_public_service_jobs()
+    clinic = next(w for w in world.workplaces if w.service_name == "Sjukvård")
+    clinic.employed = clinic.capacity
+    world.last_service_operating_paid["Sjukvård"] = world._service_operating_requests()["Sjukvård"]
+    world._update_service_capacity()
+
+    class PredictableRandom:
+        def __init__(self): self.values = iter((.99, 0, .99, .99, .99))
+        def random(self): return next(self.values, .99)
+        def randint(self, low, high): return low
+
+    world._rng = PredictableRandom()
+    before = patient.health
+    world._apply_service_outcomes()
+
+    assert patient.health > before
+    assert patient.healthcare_visits == 1
+    assert world.last_healthcare_treated == 1
+    assert patient.sick
+
+
+def test_service_access_depends_on_the_residents_address():
+    world = make_world()
+    near, far = world.humans[:2]
+    near.home_x = near.home_y = 3
+    far.home_x = far.home_y = world.grid_size-2
+    world.services["Polis"] = True
+    world.service_funding["Polis"] = 100
+    world.buildings.append(Building(3, 3, "#4169a1", "Polis", service_name="Polis"))
+    world._sync_public_service_jobs()
+    police = next(w for w in world.workplaces if w.service_name == "Polis")
+    police.employed = police.capacity
+    world.last_service_operating_paid["Polis"] = world._service_operating_requests()["Polis"]
+    world._update_service_capacity()
+
+    assert world._individual_service_effect(near, "Polis") > world._individual_service_effect(far, "Polis")
+
+
+def test_education_creates_a_small_skilled_wage_advantage():
+    world = make_world()
+    worker = world.humans[0]
+    skilled_job = Workplace(99, "Industri", 65, 1)
+    worker.education_level = 0
+    untrained_wage = world._wage_for(worker, skilled_job)
+    worker.education_level = 100
+
+    assert world._wage_for(worker, skilled_job) == untrained_wage+5
