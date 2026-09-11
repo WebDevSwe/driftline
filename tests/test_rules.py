@@ -1,13 +1,15 @@
-from world import World, WorldConfig, WORKPLACE_RULES, TENT_CAPACITY
+from world import (PIONEER_CAPITAL_BONUS, STARTING_TREASURY, TENT_CAPACITY,
+                   WORKPLACE_RULES, World, WorldConfig)
 
 
-def test_starting_capital_range():
+def test_starting_population_includes_solvent_pioneers():
     world = World(WorldConfig(name="Test", size_label="Liten", region="Medel"))
     base_wage = WORKPLACE_RULES["Basjobb"]["wage"]
     low = base_wage // 2
     high = base_wage * 3
-    for human in world.humans:
-        assert low <= human.money <= high
+    assert all(low <= human.money <= high+PIONEER_CAPITAL_BONUS[1] for human in world.humans)
+    assert any(human.money > high for human in world.humans)
+    assert world.money == STARTING_TREASURY
 
 
 def test_tent_capacity_is_four_per_tent():

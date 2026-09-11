@@ -187,7 +187,7 @@ def test_unemployment_support_is_paid_by_the_municipality():
     assert all(human.money == before+28 for human, before in zip(world.humans, balances))
 
 
-def test_farm_is_placed_as_a_contiguous_plot_outside_centre():
+def test_founding_farm_is_contiguous_and_reachable_from_centre():
     world = make_world()
     coordinates = world._claim_farmland(world.humans[0].id)
     centre = world.grid_size//2
@@ -195,7 +195,9 @@ def test_farm_is_placed_as_a_contiguous_plot_outside_centre():
     assert len(coordinates) == 4
     assert len({x for x, _ in coordinates}) == 2
     assert len({y for _, y in coordinates}) == 2
-    assert min(abs(x-centre)+abs(y-centre) for x, y in coordinates) > world.grid_size//3
+    distances = [abs(x-centre)+abs(y-centre) for x, y in coordinates]
+    assert min(distances) > 2
+    assert min(distances) <= 8
 
 
 def test_farm_workers_keep_their_profession():
@@ -393,13 +395,13 @@ def test_high_tax_and_long_financial_stress_can_cause_outmigration():
     assert world.last_departures >= 1
 
 
-def test_buildable_map_reaches_the_new_one_block_margin():
+def test_founding_farmland_respects_the_buildable_map_margin():
     world = make_world()
     world.buildings = []
     cells = world._claim_farmland(world.humans[0].id)
 
     assert cells
-    assert any(1 in coordinate for coordinate in cells)
+    assert all(1 <= value < world.grid_size-1 for coordinate in cells for value in coordinate)
 
 
 def test_better_paid_shop_can_recruit_from_a_well_supplied_farm():
@@ -929,6 +931,24 @@ def test_business_owner_keeps_their_planned_reserve():
 
     assert owner.money >= owner.reserve_target
     assert owner.last_decision.startswith("Startade jordbruk")
+    farm = next(workplace for workplace in world.workplaces if workplace.kind == "Jordbruk")
+    assert farm.money >= farm.wage*min(3, farm.capacity)*3
+
+
+def test_cash_poor_farm_owner_can_work_without_inventing_a_wage():
+    world = make_world()
+    owner = world.humans[0]
+    world.central_bank.reserves = 0
+    world.workplaces = [Workplace(
+        90, "Jordbruk", 20, 1, owner_id=owner.id, money=0,
+        blocks=[(world.grid_size//2+4, world.grid_size//2)],
+    )]
+
+    world._assign_jobs_and_pay_wages()
+
+    assert owner.job_id == 90
+    assert world.workplaces[0].employed == 1
+    assert owner.last_income == 0
 
 
 def test_old_save_receives_household_plans_when_loaded():

@@ -42,6 +42,9 @@ LOCAL_COMMUTE_DISTANCE = TRANSPORT_MODES["Gå"]["range"]
 CAR_COMMUTE_DISTANCE = TRANSPORT_MODES["Bil"]["range"]
 CIVIC_BLOCK_COST = 18
 SERVICE_BUILD_COST = 45
+STARTING_TREASURY = 12000
+PIONEER_CAPITAL_BONUS = (90, 180)
+PIONEER_PHASE_MONTHS = 36
 
 PERMANENT_HOME_KINDS = {"Bostad", "Hydda", "Stuga", "Villa", "Stort hus", "Gård", "Lägenhet"}
 HOME_RUNNING_COSTS = {"Hydda": 1, "Stuga": 3, "Villa": 6, "Stort hus": 10, "Gård": 5}
@@ -89,7 +92,10 @@ class World:
         self.buildings: list[Building] = []
         self.humans: list[Human] = []
         self.workplaces: list[Workplace] = []
-        self.money, self.population, self.stability = 120, 10, 72
+        # The settlement is publicly financed during its vulnerable founding
+        # phase. This is working capital for housing, facilities and wages, not
+        # private wealth and therefore remains visible in the municipal budget.
+        self.money, self.population, self.stability = STARTING_TREASURY, 10, 72
         self.central_bank = CentralBank()
         self.expenses, self.tax_rate = 0, 0.01
         self.block_cost, self.block_restore_cost, self.food_price = 8, 20, FOOD_PRICE
@@ -175,6 +181,13 @@ class World:
     def _new_human(self):
         h = Human(self.next_human_id, self._starting_capital(), self._random_name(),
                   self._rng.randint(18, 35), self._random_drive(), food=40)
+        # Early settlements need a few residents who can carry the initial risk.
+        # The bonus is heterogeneous and still requires both demand and personal
+        # willingness before it can become a farm or another business.
+        if (self.month <= PIONEER_PHASE_MONTHS
+                and h.drive in ("lantbruk", "företagare", "risk")
+                and self._rng.random() < .55):
+            h.money += self._rng.randint(*PIONEER_CAPITAL_BONUS)
         h.housing_ambition = round(self._rng.uniform(.75, 1.25), 2)
         # Stable variation without consuming the world's random event stream.
         h.education_level = 15+(h.id*17+h.age*3)%46
@@ -795,7 +808,7 @@ class World:
             strain=rules["strain"], owner_id=owner.id, money=seed, blocks=blocks, demand_score=demand_score)
         self.workplaces.append(workplace)
         working_capital = market_wage*min(3, capacity)*3
-        if kind != "Jordbruk" and workplace.money < working_capital:
+        if workplace.money < working_capital:
             self._take_loan(workplace, working_capital-workplace.money)
         if kind == "Hotell":
             for coordinate in blocks:
@@ -885,15 +898,29 @@ class World:
                 nearest_farm = min((abs(x-fx)+abs(y-fy) for fx, fy in farms), default=self.grid_size)
                 plots.append((distance, nearest_farm, self._rng.random(), cells))
         if not plots: return []
-        # Some founders deliberately settle new land. Most extend an agricultural
-        # district, but a sizeable random term prevents corner-filling geometry.
-        if self._rng.random() < .20:
-            viable = [row for row in plots if row[0] >= self.grid_size*.18]
+        # Founding farms form a reachable green belt around the settlement.
+        # As the town matures, some farmers establish satellite plots farther
+        # out while most continue an existing agricultural district.
+        green_belt = max(5, round(self.grid_size*.12))
+        founding_phase = self.month <= PIONEER_PHASE_MONTHS and len(farms) < 3
+        if founding_phase:
+            _, _, _, cells = min(
+                plots,
+                key=lambda row: (abs(row[0]-green_belt), row[1], row[2]),
+            )
+        elif self._rng.random() < .16:
+            inner = max(green_belt+3, round(self.grid_size*.18))
+            outer = max(inner, round(self.grid_size*.38))
+            viable = [row for row in plots if inner <= row[0] <= outer]
             _, _, _, cells = self._rng.choice(viable or plots)
         elif farms:
-            _, _, _, cells = max(plots, key=lambda row: (row[0]-row[1]*.7+row[2]*self.grid_size*.35))
+            preferred_ring = green_belt+min(round(self.month/48), round(self.grid_size*.20))
+            _, _, _, cells = min(
+                plots,
+                key=lambda row: (row[1]*1.6+abs(row[0]-preferred_ring)+row[2]*2),
+            )
         else:
-            _, _, _, cells = max(plots, key=lambda row: row[0]+row[2]*self.grid_size*.45)
+            _, _, _, cells = min(plots, key=lambda row: (abs(row[0]-green_belt), row[2]))
         for x, y in cells:
             old = inactive.get((x, y))
             if old:
@@ -967,7 +994,11 @@ class World:
                 gain = self._wage_for(human, workplace)-self._wage_for(human, old)
                 essential_reopening = (counts[workplace.id] == 0 and workplace.kind in ("Mataffär", "Hotell"))
                 if gain < 8 and not essential_reopening: continue
-                if old.kind == "Jordbruk" and signals.get("Jordbruk", 0) > .5: continue
+                # A vacant field is not food. Farmers may be recruited away only
+                # after actual staffed production covers a safety margin.
+                if (old.kind == "Jordbruk"
+                        and (old.owner_id == human.id or self.market.food_pressure > .75)):
+                    continue
                 essential_bonus = 80 if essential_reopening and old.kind != "Jordbruk" else 0
                 candidates.append((gain+essential_bonus+self._preference(human, workplace.kind)*3, human, old))
             for _, human, old in sorted(candidates, key=lambda row: row[0], reverse=True)[:min(vacancies, max(1, workplace.capacity//3))]:
@@ -991,7 +1022,18 @@ class World:
                         and (w.kind in ("Jordbruk", "Mataffär", "Hotell")
                              or w.demand_score >= .4)):
                     self._take_loan(w, wage-w.money)
-                if w.money < wage: continue
+                if w.money < wage:
+                    # A proprietor can still tend their own land during a
+                    # cash-poor month. The farm produces and can sell food, but
+                    # no wage, tax or pension money is invented.
+                    if w.kind == "Jordbruk" and w.owner_id == h.id:
+                        h.job_id = w.id
+                        w.employed += 1
+                        if previous_jobs.get(h.id) != w.id:
+                            h.last_decision = "Arbetar vidare i det egna jordbruket utan löneuttag"
+                            h.decision_reasons = ["gårdens kassa räcker ännu inte till lön",
+                                                  "skörden behövs på den lokala matmarknaden"]
+                    continue
                 contribution = max(1, int(wage*.08))
                 tax = int(max(0, wage-contribution)*self.tax_rate)
                 net_wage = wage-contribution-tax
@@ -2031,9 +2073,12 @@ class World:
     def _develop_apartment_housing(self):
         apartment_build_cost = max(1, round(APARTMENT_BUILD_COST*self.market.construction_index))
         shortage = len(self.humans)-self._housing_capacity()
-        civic_exists = any(b.active and (b.kind == "Centrum" or b.kind in SERVICE_COLORS)
+        civic_exists = any(b.active and (b.kind in ("Torg", "Centrum") or b.kind in SERVICE_COLORS)
                            for b in self.buildings)
-        if len(self.humans) < 35 or shortage < 1 or not civic_exists or self.money < apartment_build_cost:
+        founding_need = self.month <= PIONEER_PHASE_MONTHS and shortage >= 5
+        mature_need = len(self.humans) >= 35 and shortage >= 1
+        if (not (founding_need or mature_need) or not civic_exists
+                or self.money < apartment_build_cost):
             return
         building = self._claim_central_building("Flerfamiljshus", "#8b78a8")
         if building:

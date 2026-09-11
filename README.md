@@ -197,6 +197,12 @@ senare flytta till permanent bostad.
 
 ### Företag och arbete
 
+Kommunen börjar med `12 000 SM` i etableringskapital. Det är en separat offentlig
+kassa för de första bostäderna, servicelokalerna och lönerna och ska fortfarande
+förvaltas genom skatt och budget. Under de första tre åren får vissa invånare med
+företagar-, risk- eller lantbruksdrivkraft ett varierande pionjärkapital. Det ger
+möjlighet, men företag uppstår fortfarande bara när lokal efterfrågan finns.
+
 Varje verksamhet får en efterfrågesignal. Potentiella ägare jämför verksamheter
 med en poäng baserad på efterfrågan, förväntad intäkt, kapital och personlig
 preferens. Högst rimlig poäng vinner; slump används endast för små variationer
@@ -215,6 +221,12 @@ hålls kvar längre eftersom matförsörjningen är samhällskritisk. Livskrafti
 privata företag kan låna till en tillfällig lönebrist, och kapital utöver dubbla
 företagsreserven kan delas ut till ägaren. Därmed ger företagande personlig
 avkastning utan att ägaren tömmer rörelsen på dess lönebuffert.
+
+De första gårdarna läggs i ett nåbart grönt bälte utanför torget. Senare kan nya
+jordbruk bilda kluster och satelliter längre ut. Jordbruk kan låna till sin
+lönebuffert på samma sätt som andra företag. Om kassan ändå är tom kan ägaren
+bruka den egna gården utan löneuttag; produktionen finns då på riktigt, men inga
+pengar, skatter eller pensionsavsättningar skapas ur tomma luften.
 
 Jobb är avståndsberoende. Invånaren väljer det billigaste transportsätt som når
 arbetet: gång når 5 block gratis, cykel 18 block (`35 SM` att köpa och `1 SM`
