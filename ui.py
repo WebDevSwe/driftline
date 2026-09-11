@@ -356,6 +356,8 @@ class App(ctk.CTk):
                 "Matpris", "Rumshyra", "Lägenhetshyra", "Hotellpris",
                 "Lönenivå", "Byggkostnadsnivå",
                 "Ekonomiskt trygga", "Genomsnittlig buffert",
+                "Företagsstarter", "Företagsexpansioner", "Neddragningar",
+                "Företagsnedläggningar", "Ägarutdelningar",
             ],
             command=lambda _value: self._update_stats_window(),
             width=160,
@@ -687,6 +689,11 @@ class App(ctk.CTk):
             "Lönenivå": "wage_index", "Byggkostnadsnivå": "construction_index",
             "Ekonomiskt trygga": "financially_secure",
             "Genomsnittlig buffert": "average_reserve",
+            "Företagsstarter": "business_starts",
+            "Företagsexpansioner": "business_expansions",
+            "Neddragningar": "business_contractions",
+            "Företagsnedläggningar": "business_closures",
+            "Ägarutdelningar": "business_dividends",
         }
         key = key_map.get(metric, "population")
         source = self.world.history_year if self.stats_per_year.get() else self.world.history
@@ -734,6 +741,11 @@ class App(ctk.CTk):
                 "construction_index": round(self.world.market.construction_index*100, 1),
                 "financially_secure": snapshot["financially_secure"],
                 "average_reserve": snapshot["average_reserve"],
+                "business_starts": self.world.last_business_starts,
+                "business_expansions": self.world.last_business_expansions,
+                "business_contractions": self.world.last_business_contractions,
+                "business_closures": self.world.last_business_closures,
+                "business_dividends": self.world.last_business_dividends,
             }
             data = [fallback.get(key, 0)]
         current = data[-1] if data else 0
@@ -796,7 +808,15 @@ class App(ctk.CTk):
             f"Mat tillgänglig: {self.world.last_food_supply:<7} Mat såld: {self.world.last_food_sold:<7} "
             f"Mat i gårdslager: {stats['food_stored']}\n"
             f"Jordbruk: {stats['farms']}    Bönder: {stats['farm_workers']}    Företag: {len(self.world.workplaces)}\n"
-            f"Verksamheter: {businesses}\n\n"
+            f"Verksamheter: {businesses}\n"
+            f"Lönsamma/förlustdrivande privata företag: "
+            f"{stats['profitable_businesses']}/{stats['lossmaking_businesses']}    "
+            f"Företagsreserver: {stats['business_reserves']} SM\n"
+            f"Denna månad · starter {self.world.last_business_starts}, "
+            f"expansioner {self.world.last_business_expansions}, "
+            f"neddragningar {self.world.last_business_contractions}, "
+            f"nedläggningar {self.world.last_business_closures}, "
+            f"utdelningar {self.world.last_business_dividends} SM\n\n"
             "BOSTÄDER OCH CENTRUM\n"
             f"Boende i bostad: {stats['housed']}/{stats['housing_capacity']}    "
             f"Lediga platser: {stats['housing_vacancies']}\n"
@@ -1185,7 +1205,12 @@ class App(ctk.CTk):
             facts += ["", f"{workplace.service_name or workplace.kind} · verksamhet {workplace.id}",
                       f"Ägare: {owner.name if owner else 'Kommunen'}",
                       f"Jobb: {workplace.employed}/{workplace.capacity}",
-                      f"Kassa: {workplace.money} SM    Resultat: {workplace.monthly_profit:+} SM"]
+                      f"Kassa: {workplace.money} SM    Reservmål: {workplace.reserve_target} SM",
+                      f"Intäkt: {workplace.monthly_revenue} SM    Löner: {workplace.monthly_payroll} SM",
+                      f"Resultat: {workplace.monthly_profit:+} SM    Livstidsresultat: {workplace.lifetime_profit:+} SM",
+                      f"Ålder: {workplace.age_months} mån    Vinst-/förlustsvit: "
+                      f"{workplace.profitable_months}/{workplace.loss_months} mån",
+                      f"Beslut: {workplace.last_decision or 'Avvaktar'}"]
         ctk.CTkLabel(overview, text="\n".join(facts) or "Ingen verksamhet på platsen",
                      anchor="w", justify="left", text_color=INK).pack(fill=tk.X, padx=18, pady=(0, 14))
 

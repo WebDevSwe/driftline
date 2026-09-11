@@ -948,3 +948,70 @@ def test_old_save_receives_household_plans_when_loaded():
 
     assert all(human.reserve_target > 0 for human in loaded.humans)
     assert all(human.last_decision for human in loaded.humans)
+
+
+def test_profitable_business_expands_real_job_capacity():
+    world = make_world()
+    workplace = Workplace(
+        90, "Basjobb", 36, 2, employed=2, money=1000, blocks=[(3, 3)],
+        monthly_profit=100, profitable_months=2, last_capacity_change_month=0,
+    )
+    world.workplaces = [workplace]
+    world.month = 12
+    money_before = workplace.money
+
+    world._update_business_plans()
+
+    assert workplace.capacity == 3
+    assert workplace.money < money_before
+    assert workplace.last_decision.startswith("Expanderade")
+    assert world.last_business_expansions == 1
+
+
+def test_long_running_losses_cause_a_gradual_contraction():
+    world = make_world()
+    workplace = Workplace(
+        90, "Industri", 65, 10, money=0, blocks=[(3, 3)],
+        monthly_profit=-100, loss_months=5, last_capacity_change_month=0,
+    )
+    world.workplaces = [workplace]
+    world.month = 12
+
+    world._update_business_plans()
+
+    assert workplace.capacity < 10
+    assert workplace.capacity >= 3
+    assert world.last_business_contractions == 1
+
+
+def test_mature_business_can_pay_its_owner_a_dividend():
+    world = make_world()
+    owner = world.humans[0]
+    workplace = Workplace(
+        90, "Basjobb", 36, 2, employed=2, owner_id=owner.id, money=1000,
+        blocks=[(3, 3)], monthly_profit=100, profitable_months=2,
+        last_capacity_change_month=12,
+    )
+    world.workplaces = [workplace]
+    world.month = 12
+    owner_before = owner.money
+
+    world._update_business_plans()
+
+    assert owner.money > owner_before
+    assert world.last_business_dividends == owner.money-owner_before
+    assert any(t.category == "Företagsutdelning" for t in world.transactions)
+
+
+def test_viable_industry_can_borrow_to_cover_a_wage():
+    world = make_world()
+    human = world.humans[0]
+    workplace = Workplace(90, "Industri", 65, 1, money=0, blocks=[(3, 3)], demand_score=1)
+    world.workplaces = [workplace]
+    human.home_x = human.home_y = 3
+
+    world._assign_jobs_and_pay_wages()
+
+    assert human.job_id == workplace.id
+    assert workplace.loan_balance > 0
+    assert any(t.category == "Banklån" for t in world.transactions)

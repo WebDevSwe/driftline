@@ -98,6 +98,15 @@ class Workplace:
     demand_score: float = 0.0
     monthly_profit: int = 0
     service_name: str | None = None
+    age_months: int = 0
+    profitable_months: int = 0
+    loss_months: int = 0
+    reserve_target: int = 0
+    lifetime_profit: int = 0
+    monthly_revenue: int = 0
+    monthly_payroll: int = 0
+    last_capacity_change_month: int = -12
+    last_decision: str = ""
 
 @dataclass
 class FoodStore:

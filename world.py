@@ -119,6 +119,8 @@ class World:
             "food_price", "room_rent", "apartment_rent", "hotel_rate",
             "wage_index", "construction_index",
             "financially_secure", "average_reserve",
+            "business_starts", "business_expansions", "business_contractions",
+            "business_closures", "business_dividends",
         )
         self.history, self.history_year = {k: [] for k in keys}, {k: [] for k in keys}
         self.last_revenue = self.last_hungry = self.last_sick = self.last_unemployed = 0
@@ -145,6 +147,9 @@ class World:
         self.last_healthcare_treated = self.last_crime_victims = 0
         self.last_fire_incidents = self.last_students_supported = 0
         self.last_childcare_supported = 0
+        self.last_business_starts = self.last_business_expansions = 0
+        self.last_business_contractions = self.last_business_closures = 0
+        self.last_business_dividends = 0
         self._month_external_inflow = self._month_external_outflow = 0
         self.centrality: dict[tuple[int, int], float] = {}
         self._rng = random.Random(42)
@@ -197,9 +202,12 @@ class World:
         self.last_development_revenue = 0
         self.last_public_investment = 0
         self.last_public_payroll = 0
+        self.last_business_starts = self.last_business_expansions = 0
+        self.last_business_contractions = self.last_business_closures = 0
+        self.last_business_dividends = 0
         self._sync_population(); self._age_population(); self._develop_apartment_housing()
         self._evaluate_housing_market(); self._develop_civic_center()
-        self._spawn_new_businesses(); self._sync_public_service_jobs()
+        self._update_business_plans(); self._spawn_new_businesses(); self._sync_public_service_jobs()
         self._assign_jobs_and_pay_wages(); self._update_service_capacity(); self._apply_transport_choices()
         self._apply_unemployment_support(); self._apply_pensions()
         hungry = self._apply_food()
@@ -261,6 +269,11 @@ class World:
             "financially_secure": sum(h.money >= h.reserve_target for h in self.humans),
             "average_reserve": round(sum(h.reserve_target for h in self.humans)
                                      /max(1, len(self.humans)), 1),
+            "business_starts": self.last_business_starts,
+            "business_expansions": self.last_business_expansions,
+            "business_contractions": self.last_business_contractions,
+            "business_closures": self.last_business_closures,
+            "business_dividends": self.last_business_dividends,
             "hotel_guests": snapshot["hotel_guests"],
             "hotel_rooms": snapshot["hotel_rooms"],
         }
@@ -271,7 +284,9 @@ class World:
             if self.month > 0 and self.month % 12 == 0:
                 annual_value = (sum(self.history[key][-12:]) if key in
                                 {"arrivals", "departures", "deaths", "unemployment_support", "expenses",
-                                 "external_balance", "money_discrepancy"}
+                                 "external_balance", "money_discrepancy", "business_starts",
+                                 "business_expansions", "business_contractions",
+                                 "business_closures", "business_dividends"}
                                 else value)
                 self.history_year[key].append(annual_value)
 
@@ -331,6 +346,11 @@ class World:
             "financially_secure": sum(h.money >= h.reserve_target for h in self.humans),
             "average_reserve": round(sum(h.reserve_target for h in self.humans)
                                      /max(1, len(self.humans)), 1),
+            "profitable_businesses": sum(w.monthly_profit > 0 for w in self.workplaces
+                                         if not w.service_name),
+            "lossmaking_businesses": sum(w.monthly_profit < 0 for w in self.workplaces
+                                         if not w.service_name),
+            "business_reserves": sum(w.money for w in self.workplaces if not w.service_name),
         }
 
     def _record_pinned_humans(self):
@@ -606,6 +626,26 @@ class World:
                         /max(.75, self.market.construction_index)),
         }
 
+    def _operating_demand(self, kind):
+        """Demand for an existing firm, separate from the signal to create another one."""
+        people = max(1, len(self.humans))
+        wealth = sum(h.money for h in self.humans)/people
+        competitors = max(1, sum(w.kind == kind and not w.service_name for w in self.workplaces))
+        if kind == "Basjobb":
+            return max(.65, min(1.35, .85+self.market.labour_pressure*.20))
+        if kind == "Industri":
+            return max(.55, min(1.40, (.65+wealth/180+self.market.labour_pressure*.15)/competitors))
+        if kind == "Service":
+            return max(.35, min(1.35, (people/35)*(1+wealth/100)/competitors))
+        if kind == "Mataffär":
+            return max(.25, min(1.35, (people/60)*(1+wealth/120)/competitors))
+        if kind == "Hotell":
+            guests = sum(h.home_kind == "Hotell" for h in self.humans)
+            return max(.20, min(1.50, (guests+self.last_arrivals+1)/(competitors*3)))
+        if kind == "Jordbruk":
+            return max(.35, min(1.50, self.market.food_pressure/competitors))
+        return 1.0
+
     def _preference(self, h, kind):
         value = {"företagare": 1.25, "risk": 1.15, "sparsam": .85}.get(h.drive, 1)
         if h.drive == "lantbruk" and kind == "Jordbruk": value *= 2.5
@@ -614,6 +654,82 @@ class World:
         if kind in ("Service", "Industri"):
             value *= .8+min(100, h.education_level)/200
         return value
+
+    def _update_business_plans(self):
+        signals = self._market_signals()
+        people = {h.id: h for h in self.humans}
+        for workplace in self.workplaces:
+            workplace.age_months += 1
+            workplace.lifetime_profit += workplace.monthly_profit
+            if workplace.monthly_profit > 0:
+                workplace.profitable_months += 1
+                workplace.loss_months = max(0, workplace.loss_months-1)
+            elif workplace.monthly_profit < 0:
+                workplace.loss_months += 1
+                workplace.profitable_months = max(0, workplace.profitable_months-1)
+
+            expected_wage = max(1, round(workplace.wage*self.market.wage_index))
+            workplace.reserve_target = expected_wage*max(1, workplace.capacity)*2
+            if workplace.service_name:
+                workplace.last_decision = "Följer kommunens beslutade kapacitet"
+                continue
+
+            rules = WORKPLACE_RULES[workplace.kind]
+            demand = signals.get(workplace.kind, workplace.demand_score)
+            can_change = self.month-workplace.last_capacity_change_month >= 6
+            absolute_max = rules["capacity_max"]*4
+            if (can_change and workplace.profitable_months >= 3 and demand >= .45
+                    and workplace.capacity < absolute_max):
+                increase = min(absolute_max-workplace.capacity,
+                               max(1, math.ceil(workplace.capacity*.20)))
+                investment = max(8, round(expected_wage*increase*.7
+                                          *self.market.construction_index))
+                if workplace.money >= workplace.reserve_target+investment:
+                    density = {"Mataffär": 3, "Basjobb": 4, "Service": 4,
+                               "Hotell": 4, "Industri": 4, "Jordbruk": 2}.get(workplace.kind, 4)
+                    desired_capacity = workplace.capacity+increase
+                    if desired_capacity > max(1, len(workplace.blocks))*density:
+                        extra = self._claim_near_activity(
+                            workplace.kind, rules["color"], workplace.owner_id, 1
+                        )
+                        if not extra:
+                            workplace.last_decision = "Vill expandera men hittar ingen byggbar mark"
+                            continue
+                        workplace.blocks.extend(extra)
+                    workplace.money -= investment
+                    self._record_transaction("Företagsinvestering", investment,
+                                             "Företag", workplace.id, "Extern", None,
+                                             f"{workplace.kind}: +{increase} jobb")
+                    workplace.capacity += increase
+                    workplace.last_capacity_change_month = self.month
+                    workplace.last_decision = f"Expanderade med {increase} arbetsplatser"
+                    self.last_business_expansions += 1
+
+            minimum = rules["capacity_min"]
+            if (can_change and workplace.loss_months >= 6 and workplace.capacity > minimum
+                    and not workplace.last_decision.startswith("Expanderade")):
+                decrease = min(workplace.capacity-minimum,
+                               max(1, math.ceil(workplace.capacity*.15)))
+                workplace.capacity -= decrease
+                workplace.last_capacity_change_month = self.month
+                workplace.last_decision = f"Minskade med {decrease} arbetsplatser efter förluster"
+                self.last_business_contractions += 1
+
+            owner = people.get(workplace.owner_id)
+            distributable = max(0, workplace.money-workplace.reserve_target*2)
+            if owner and workplace.profitable_months >= 3 and distributable:
+                dividend = min(distributable, max(1, workplace.monthly_profit//2))
+                if dividend > 0:
+                    workplace.money -= dividend
+                    owner.money += dividend
+                    owner.last_income += dividend
+                    owner.last_decision = f"Tog emot {dividend} SM i utdelning från {workplace.kind.lower()}"
+                    self.last_business_dividends += dividend
+                    self._record_transaction("Företagsutdelning", dividend,
+                                             "Företag", workplace.id,
+                                             "Invånare", owner.id, workplace.kind)
+            if not workplace.last_decision:
+                workplace.last_decision = "Behåller kapaciteten och bygger reserv"
 
     def _spawn_new_businesses(self):
         # A village can establish one firm at a time. A city has many independent
@@ -685,6 +801,7 @@ class World:
         owner.decision_reasons = [f"såg efterfrågan {demand_score:.1f}",
                                   "bedömde risken som värd att ta"]
         self.next_workplace_id += 1
+        self.last_business_starts += 1
         return True
 
     def _claim_near_activity(self, kind, color, owner_id, count):
@@ -793,7 +910,7 @@ class World:
         people = {h.id: h for h in eligible}
         for workplace in self.workplaces:
             if not workplace.service_name:
-                workplace.demand_score = signals.get(workplace.kind, workplace.demand_score)
+                workplace.demand_score = self._operating_demand(workplace.kind)
         workplaces = sorted(self.workplaces, key=lambda w: (
             bool(w.service_name), w.demand_score*max(1, w.wage), w.wage
         ), reverse=True)
@@ -867,7 +984,9 @@ class World:
                     w.money += wage
                     self._record_transaction("Kommunal finansiering", wage, "Kommun", None,
                                              "Företag", w.id, w.service_name)
-                if w.money < wage and w.kind in ("Jordbruk", "Mataffär", "Hotell"):
+                if (w.money < wage and not w.service_name
+                        and (w.kind in ("Jordbruk", "Mataffär", "Hotell")
+                             or w.demand_score >= .4)):
                     self._take_loan(w, wage-w.money)
                 if w.money < wage: continue
                 contribution = max(1, int(wage*.08))
@@ -894,7 +1013,10 @@ class World:
             factor = (0 if w.service_name else
                       {"Basjobb": 1.35, "Service": 1.25, "Industri": 1.45}.get(w.kind, 0))
             revenue = int(payroll * factor * min(1.5, max(.8, w.demand_score)))
-            w.money += revenue; w.monthly_profit = revenue-payroll
+            w.money += revenue
+            w.monthly_revenue = revenue
+            w.monthly_payroll = payroll
+            w.monthly_profit = revenue-payroll
             self._record_transaction("Extern försäljning", revenue, "Extern", None,
                                      "Företag", w.id, w.kind)
         employed = {h.id for h in self.humans if h.job_id is not None}
@@ -948,6 +1070,7 @@ class World:
             recipient = min(businesses, key=lambda w: self._commute_distance(human, w))
             recipient.money += amount
             recipient.monthly_profit += amount
+            recipient.monthly_revenue += amount
             self._record_transaction(category, amount, "Invånare", human.id,
                                      "Företag", recipient.id, item)
         else:
@@ -1038,7 +1161,7 @@ class World:
                 share = (farm_revenue-distributed if index == len(farms)-1
                          else farm_revenue*max(1, w.employed)//total)
                 distributed += share
-                w.money += share; w.monthly_profit += share
+                w.money += share; w.monthly_profit += share; w.monthly_revenue += share
                 self._record_transaction("Matförsäljning", share, "Matmarknad", None,
                                          "Företag", w.id, "Producentandel")
         if retailers and retail_revenue:
@@ -1048,7 +1171,9 @@ class World:
                 share = (retail_revenue-distributed if index == len(retailers)-1
                          else retail_revenue*retailer.employed//total)
                 distributed += share
-                retailer.money += share; retailer.monthly_profit += share
+                retailer.money += share
+                retailer.monthly_profit += share
+                retailer.monthly_revenue += share
                 self._record_transaction("Matförsäljning", share, "Matmarknad", None,
                                          "Företag", retailer.id, "Butiksandel")
         # Unsold harvest becomes a local buffer instead of disappearing. Storage
@@ -1221,6 +1346,7 @@ class World:
                 if business:
                     business.money += hotel_rate
                     business.monthly_profit += hotel_rate
+                    business.monthly_revenue += hotel_rate
                     self._record_transaction("Hotell", hotel_rate, "Invånare", guest.id,
                                              "Företag", business.id, "Övernattning")
                 else:
@@ -1409,6 +1535,7 @@ class World:
             if business:
                 business.money += hotel_rate
                 business.monthly_profit += hotel_rate
+                business.monthly_revenue += hotel_rate
                 self._record_transaction("Hotell", hotel_rate, "Invånare", newcomer.id,
                                          "Företag", business.id, "Första övernattning")
             else:
@@ -1636,10 +1763,13 @@ class World:
                 kept.append(w)
                 continue
             w.idle_months = w.idle_months+1 if w.employed == 0 else 0
-            if w.idle_months < 18 or w.kind == "Jordbruk": kept.append(w); continue
+            insolvent = w.loss_months >= 24 and w.money < max(1, w.reserve_target//2)
+            should_close = w.idle_months >= 18 or insolvent
+            if not should_close or w.kind == "Jordbruk": kept.append(w); continue
             owner = next((h for h in self.humans if h.id == w.owner_id), None)
             if owner:
                 owner.money += w.money
+                owner.last_decision = f"Avvecklade {w.kind.lower()} efter långvariga problem"
                 self._record_transaction("Företagsavveckling", w.money, "Företag", w.id,
                                          "Invånare", owner.id, w.kind)
             elif w.money:
@@ -1648,6 +1778,7 @@ class World:
             self.central_bank.outstanding_loans = max(0, self.central_bank.outstanding_loans-w.loan_balance)
             for b in self.buildings:
                 if (b.x, b.y) in w.blocks: b.active = False; b.kind = "Övergiven"; b.owner_id = None
+            self.last_business_closures += 1
         self.workplaces = kept
 
     # ---------- Physical civic centre and municipal housing ----------
@@ -1980,7 +2111,10 @@ class World:
                 "last_public_payroll", "last_deaths", "last_retirements", "population_events",
                 "last_external_inflow", "last_external_outflow", "last_money_discrepancy",
                 "last_money_supply", "last_healthcare_treated", "last_crime_victims",
-                "last_fire_incidents", "last_students_supported", "last_childcare_supported")
+                "last_fire_incidents", "last_students_supported", "last_childcare_supported",
+                "last_business_starts", "last_business_expansions",
+                "last_business_contractions", "last_business_closures",
+                "last_business_dividends")
         data = {k: getattr(self, k) for k in keys}
         data.update(buildings=[b.__dict__ for b in self.buildings], humans=[h.__dict__ for h in self.humans],
                     workplaces=[w.__dict__ for w in self.workplaces],
