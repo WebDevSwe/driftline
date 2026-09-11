@@ -865,3 +865,86 @@ def test_market_state_survives_save_and_load():
 
     assert loaded.market == world.market
     assert loaded.food_price == world.market.food_price
+
+
+def test_household_buffer_reflects_personality_and_dependents():
+    world = make_world()
+    saver, risk_taker = world.humans[:2]
+    for human in (saver, risk_taker):
+        human.money = 200
+        human.home_kind = "Tält"
+        human.job_id = None
+        human.dependents = 0
+    saver.drive = "sparsam"
+    risk_taker.drive = "risk"
+
+    world._update_household_plans()
+    risk_buffer = risk_taker.reserve_target
+    risk_taker.dependents = 2
+    world._update_household_plans()
+
+    assert saver.reserve_target > risk_buffer
+    assert risk_taker.reserve_target > risk_buffer
+
+
+def test_person_does_not_build_through_their_own_safety_buffer():
+    world = make_world()
+    buyer = world.humans[0]
+    for human in world.humans:
+        human.money = 0
+    buyer.money = 100
+    buyer.reserve_target = 80
+
+    world._evaluate_housing_market()
+    assert not any(b.kind == "Bostad" for b in world.buildings)
+
+    buyer.money = 130
+    world._evaluate_housing_market()
+    assert any(b.kind == "Bostad" and b.owner_id == buyer.id for b in world.buildings)
+
+
+def test_far_commuter_chooses_transport_without_spending_the_buffer():
+    world = make_world()
+    human = world.humans[0]
+    human.home_x = human.home_y = 1
+    human.money = 100
+    human.reserve_target = 90
+    human.job_id = 90
+    world.workplaces = [Workplace(90, "Industri", 65, 1, money=1000, blocks=[(11, 1)])]
+
+    world._apply_transport_choices()
+
+    assert human.transport_mode == "Buss"
+    assert human.money == 95
+    assert "buss" in human.last_decision
+
+
+def test_business_owner_keeps_their_planned_reserve():
+    world = make_world()
+    owner = world.humans[0]
+    owner.money = 100
+    owner.reserve_target = 80
+
+    assert world._create_workplace(owner, "Jordbruk", 10)
+
+    assert owner.money >= owner.reserve_target
+    assert owner.last_decision.startswith("Startade jordbruk")
+
+
+def test_old_save_receives_household_plans_when_loaded():
+    world = make_world()
+    data = world.to_dict()
+    plan_fields = {
+        "essential_monthly_cost", "reserve_target", "disposable_money",
+        "housing_motivation", "business_motivation", "mobility_motivation",
+        "consumption_motivation", "last_decision", "decision_reasons",
+        "last_discretionary_purchase_month",
+    }
+    for human in data["humans"]:
+        for field in plan_fields:
+            human.pop(field, None)
+
+    loaded = World.from_dict(data)
+
+    assert all(human.reserve_target > 0 for human in loaded.humans)
+    assert all(human.last_decision for human in loaded.humans)

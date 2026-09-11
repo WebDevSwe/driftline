@@ -355,6 +355,7 @@ class App(ctk.CTk):
                 "Servicetäckning", "Serviceeffekt", "Extern balans", "Bokföringsavvikelse",
                 "Matpris", "Rumshyra", "Lägenhetshyra", "Hotellpris",
                 "Lönenivå", "Byggkostnadsnivå",
+                "Ekonomiskt trygga", "Genomsnittlig buffert",
             ],
             command=lambda _value: self._update_stats_window(),
             width=160,
@@ -569,6 +570,16 @@ class App(ctk.CTk):
             if selected.retired: lines.append("Status: Pensionär")
             if selected.dependents: lines.append(f"Omsorgsansvar: {selected.dependents} barn")
             if selected.loan_balance: lines.append(f"Lån: {selected.loan_balance} SM")
+            lines += ["", "BESLUT OCH PRIORITERINGAR",
+                      f"Senaste beslut: {selected.last_decision or 'Inget aktivt beslut ännu'}",
+                      f"Grundkostnad: {selected.essential_monthly_cost} SM/mån",
+                      f"Egen trygghetsbuffert: {selected.reserve_target} SM",
+                      f"Pengar över bufferten: {max(0, selected.money-selected.reserve_target)} SM",
+                      (f"Drivkrafter · boende {selected.housing_motivation:.1f}  "
+                       f"företag {selected.business_motivation:.1f}  "
+                       f"transport {selected.mobility_motivation:.1f}  "
+                       f"konsumtion {selected.consumption_motivation:.1f}")]
+            lines.extend(f"• {reason}" for reason in selected.decision_reasons)
             lines += ["", "BOENDE OCH ÄGANDE", f"Boende: {selected.home_kind}", f"Adress: {address}"]
             if selected.home_owner_id == selected.id and selected.home_kind in HOME_RUNNING_COSTS:
                 lines.append(f"Boendedrift: {HOME_RUNNING_COSTS[selected.home_kind]} SM/mån")
@@ -630,6 +641,13 @@ class App(ctk.CTk):
                     f"Hälsa: {first['health']} → {selected.health}\n"
                     f"Mat: {first['food']} → {selected.food}\n"
                 )
+                decisions = [entry for entry in selected.personal_history if entry.get("decision")]
+                if decisions:
+                    detail += "Senaste följda beslut:\n"
+                    detail += "\n".join(
+                        f"  M{entry['month']}: {entry['decision']}"
+                        for entry in decisions[-6:]
+                    )+"\n"
             self.citizen_detail.configure(state="normal")
             self.citizen_detail.delete("1.0", tk.END)
             self.citizen_detail.insert("1.0", detail)
@@ -667,6 +685,8 @@ class App(ctk.CTk):
             "Matpris": "food_price", "Rumshyra": "room_rent",
             "Lägenhetshyra": "apartment_rent", "Hotellpris": "hotel_rate",
             "Lönenivå": "wage_index", "Byggkostnadsnivå": "construction_index",
+            "Ekonomiskt trygga": "financially_secure",
+            "Genomsnittlig buffert": "average_reserve",
         }
         key = key_map.get(metric, "population")
         source = self.world.history_year if self.stats_per_year.get() else self.world.history
@@ -712,6 +732,8 @@ class App(ctk.CTk):
                 "hotel_rate": self.world.market.hotel_rate,
                 "wage_index": round(self.world.market.wage_index*100, 1),
                 "construction_index": round(self.world.market.construction_index*100, 1),
+                "financially_secure": snapshot["financially_secure"],
+                "average_reserve": snapshot["average_reserve"],
             }
             data = [fallback.get(key, 0)]
         current = data[-1] if data else 0
@@ -767,7 +789,9 @@ class App(ctk.CTk):
             f"Lönenivå: {self.world.market.wage_index*100:.0f}%    "
             f"Byggkostnadsnivå: {self.world.market.construction_index*100:.0f}%    "
             f"Tryck mat/bostad/arbete: {self.world.market.food_pressure:.2f} / "
-            f"{self.world.market.housing_pressure:.2f} / {self.world.market.labour_pressure:.2f}\n\n"
+            f"{self.world.market.housing_pressure:.2f} / {self.world.market.labour_pressure:.2f}\n"
+            f"Ekonomiskt trygga hushåll: {stats['financially_secure']}/{self.world.population}    "
+            f"Genomsnittlig egen buffert: {stats['average_reserve']} SM\n\n"
             "MAT OCH ARBETE\n"
             f"Mat tillgänglig: {self.world.last_food_supply:<7} Mat såld: {self.world.last_food_sold:<7} "
             f"Mat i gårdslager: {stats['food_stored']}\n"

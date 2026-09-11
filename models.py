@@ -69,6 +69,16 @@ class Human:
     childcare_months: int = 0
     childcare_access: bool = False
     last_events: list[str] = field(default_factory=list)
+    essential_monthly_cost: int = 0
+    reserve_target: int = 0
+    disposable_money: int = 0
+    housing_motivation: float = 0.0
+    business_motivation: float = 0.0
+    mobility_motivation: float = 0.0
+    consumption_motivation: float = 0.0
+    last_decision: str = ""
+    decision_reasons: list[str] = field(default_factory=list)
+    last_discretionary_purchase_month: int = -12
 
 @dataclass
 class Workplace:

@@ -118,6 +118,7 @@ class World:
             "students_supported", "childcare_supported",
             "food_price", "room_rent", "apartment_rent", "hotel_rate",
             "wage_index", "construction_index",
+            "financially_secure", "average_reserve",
         )
         self.history, self.history_year = {k: [] for k in keys}, {k: [] for k in keys}
         self.last_revenue = self.last_hungry = self.last_sick = self.last_unemployed = 0
@@ -154,7 +155,7 @@ class World:
         self._drives = ["företagare", "lantbruk", "tältliv", "status", "risk", "sparsam"]
         self._seed_world(); self._seed_population(); self._sync_tents()
         self.last_money_supply = self._money_supply()
-        self._update_centrality(); self._record_history()
+        self._update_centrality(); self._update_household_plans(); self._record_history()
 
     def _seed_world(self):
         c = self.grid_size // 2
@@ -192,6 +193,7 @@ class World:
         for name, funding in self.service_funding.items():
             if funding > 0: self.services[name] = True
         self._update_market_prices()
+        self._update_household_plans()
         self.last_development_revenue = 0
         self.last_public_investment = 0
         self.last_public_payroll = 0
@@ -256,6 +258,9 @@ class World:
             "hotel_rate": self.market.hotel_rate,
             "wage_index": round(self.market.wage_index*100, 1),
             "construction_index": round(self.market.construction_index*100, 1),
+            "financially_secure": sum(h.money >= h.reserve_target for h in self.humans),
+            "average_reserve": round(sum(h.reserve_target for h in self.humans)
+                                     /max(1, len(self.humans)), 1),
             "hotel_guests": snapshot["hotel_guests"],
             "hotel_rooms": snapshot["hotel_rooms"],
         }
@@ -323,6 +328,9 @@ class World:
             "average_education": round(sum(h.education_level for h in self.humans)
                                        /max(1, len(self.humans)), 1),
             "dependents": sum(h.dependents for h in self.humans),
+            "financially_secure": sum(h.money >= h.reserve_target for h in self.humans),
+            "average_reserve": round(sum(h.reserve_target for h in self.humans)
+                                     /max(1, len(self.humans)), 1),
         }
 
     def _record_pinned_humans(self):
@@ -337,6 +345,8 @@ class World:
                 "home": human.home_kind, "hungry": human.hungry,
                 "education": human.education_level,
                 "events": list(human.last_events),
+                "decision": human.last_decision,
+                "reserve": human.reserve_target,
             })
             if len(human.personal_history) > 600:
                 human.personal_history = human.personal_history[-600:]
@@ -505,6 +515,67 @@ class World:
     def _house_expansion_cost(self):
         return max(1, round(HOUSE_EXPANSION_COST*self.market.construction_index))
 
+    def _update_household_plans(self):
+        workplaces = {w.id: w for w in self.workplaces}
+        for human in self.humans:
+            workplace = workplaces.get(human.job_id)
+            jobless = workplace is None and not human.retired
+            food_cost = FOOD_MONTHLY_NEED*self.market.food_price
+            if human.home_owner_id == human.id:
+                housing_cost = HOME_RUNNING_COSTS.get(human.home_kind, 0)
+            elif human.home_kind == "Lägenhet":
+                housing_cost = self.market.apartment_rent
+            elif human.home_kind == "Hotell":
+                housing_cost = self.market.hotel_rate
+            elif human.home_kind in PERMANENT_HOME_KINDS:
+                housing_cost = self.market.room_rent
+            else:
+                housing_cost = 0
+            transport_cost = TRANSPORT_MODES[self._transport_mode(human)]["monthly"]
+            human.essential_monthly_cost = food_cost+housing_cost+transport_cost
+
+            reserve_months = {
+                "sparsam": 6.0, "företagare": 3.0, "lantbruk": 3.0,
+                "risk": 2.0, "status": 2.0, "tältliv": 1.5,
+            }.get(human.drive, 3.0)
+            reserve_months += human.dependents*.5+(2 if jobless else 0)
+            human.reserve_target = math.ceil(human.essential_monthly_cost*reserve_months)
+            human.disposable_money = max(0, human.money-human.reserve_target)
+
+            insecure_home = human.home_kind in ("Tält", "Bostadslös", "Hotell")
+            human.housing_motivation = max(0.0,
+                human.housing_ambition+(1.6 if insecure_home else 0)
+                +human.dependents*.15+self.market.housing_pressure*.25
+                -self.market.construction_index*.35-(.5 if jobless else 0)
+            )
+            human.business_motivation = max(0.0,
+                {"företagare": 1.6, "risk": 1.35, "lantbruk": 1.15,
+                 "sparsam": .65}.get(human.drive, .9)
+                +(.35 if jobless else 0)+min(1.0, human.disposable_money/150)
+                -(.5 if human.financial_stress_months else 0)
+            )
+            distance = self._commute_distance(human, workplace) if workplace else 0
+            human.mobility_motivation = max(0.0,
+                distance/max(1, TRANSPORT_MODES["Gå"]["range"])
+                +(.8 if human.drive == "status" else .35 if human.drive == "risk" else 0)
+                -human.essential_monthly_cost/max(1, human.money)
+            )
+            human.consumption_motivation = max(0.0,
+                {"status": 1.5, "risk": 1.0, "sparsam": .35}.get(human.drive, .75)
+                +min(1.0, human.disposable_money/max(1, human.essential_monthly_cost*4))
+                -(.8 if human.hungry else 0)-(.6 if jobless else 0)
+            )
+            reasons = []
+            if jobless: reasons.append("saknar arbetsinkomst")
+            if insecure_home: reasons.append("har ett osäkert boende")
+            if human.dependents: reasons.append(f"försörjer {human.dependents} barn")
+            if human.money < human.reserve_target: reasons.append("har mindre än sin trygghetsbuffert")
+            elif human.disposable_money: reasons.append(f"har {human.disposable_money} SM över bufferten")
+            if self.market.food_pressure > 1.15: reasons.append("möter högt tryck på matmarknaden")
+            if self.market.housing_pressure > 1.15: reasons.append("möter bostadsbrist")
+            human.decision_reasons = reasons[:4] or ["har en stabil vardagsekonomi"]
+            human.last_decision = "Prioriterar sparande och grundbehov"
+
     def _market_signals(self):
         people = max(1, len(self.humans))
         farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
@@ -560,7 +631,8 @@ class World:
                     demand = signals[kind]
                     if kind == "Bostad": continue
                     profit = demand*WORKPLACE_RULES[kind]["wage"]
-                    score = demand*profit*self._preference(h, kind)*min(1.5, .5+h.money/80)
+                    score = (demand*profit*self._preference(h, kind)
+                             *max(.35, h.business_motivation)*min(1.5, .5+h.disposable_money/80))
                     if h.job_id is not None: score *= .75
                     choices.append((score, h, kind))
             created = False
@@ -576,7 +648,8 @@ class World:
         count = rules.get("blocks", rules.get("blocks_min", self._rng.choice(rules.get("blocks_choices", [1]))))
         cost = round(count*self.block_cost*rules["block_cost_multiplier"]
                      *self.market.construction_index)
-        if cost > owner.money and kind != "Jordbruk": return False
+        investable = max(0, owner.money-max(0, owner.reserve_target))
+        if cost > investable and kind != "Jordbruk": return False
         blocks = (self._claim_farmland(owner.id) if kind == "Jordbruk"
                   else self._claim_near_activity(kind, rules["color"], owner.id, count))
         if not blocks: return False
@@ -594,7 +667,8 @@ class World:
         divisor = 3 if kind == "Jordbruk" else 6
         capacity = min(rules["capacity_max"], max(rules["capacity_min"], math.ceil(len(self.humans)/divisor)))
         market_wage = max(1, round(rules["wage"]*self.market.wage_index))
-        seed = min(owner.money, market_wage*max(1, capacity))
+        investable = max(0, owner.money-max(0, owner.reserve_target))
+        seed = min(investable, market_wage*max(1, capacity))
         owner.money -= seed
         self._record_transaction("Företagskapital", seed, "Invånare", owner.id,
                                  "Företag", self.next_workplace_id, kind)
@@ -607,6 +681,9 @@ class World:
         if kind == "Hotell":
             for coordinate in blocks:
                 self._building_at(coordinate).housing_units = HOTEL_ROOMS_PER_BLOCK
+        owner.last_decision = f"Startade {kind.lower()} med {cost+seed} SM"
+        owner.decision_reasons = [f"såg efterfrågan {demand_score:.1f}",
+                                  "bedömde risken som värd att ta"]
         self.next_workplace_id += 1
         return True
 
@@ -798,6 +875,10 @@ class World:
                 net_wage = wage-contribution-tax
                 w.money -= wage; h.money += net_wage; self.money += tax; h.job_id = w.id
                 h.last_income += net_wage
+                if previous_jobs.get(h.id) != w.id:
+                    h.last_decision = f"Tog arbete inom {w.service_name or w.kind}"
+                    h.decision_reasons = [f"lönen är {wage} SM per månad",
+                                          f"resvägen är {self._commute_distance(h, w)} block"]
                 h.pension_balance += contribution
                 self.central_bank.reserves += contribution
                 self.central_bank.pension_assets += contribution
@@ -818,6 +899,9 @@ class World:
                                      "Företag", w.id, w.kind)
         employed = {h.id for h in self.humans if h.job_id is not None}
         self.unemployed = sum(not h.retired and h.id not in employed for h in self.humans)
+        for human in self.humans:
+            if not human.retired and human.id not in employed and human.last_decision.startswith("Prioriterar"):
+                human.last_decision = "Söker ett arbete som går att nå och försörja sig på"
 
     def _wage_for(self, human, workplace):
         base_wage = max(1, round(workplace.wage*self.market.wage_index))
@@ -881,23 +965,24 @@ class World:
                     desired = candidate
                     break
             if human.has_car: desired = "Bil"
-            # A few affluent, status-oriented households still choose a car even
-            # without a forced long commute; it remains deliberately uncommon.
+            available = max(0, human.money-human.reserve_target)
+            # Status and convenience can justify a car, but only when the
+            # household can preserve its own safety buffer.
             aspirational_car = (not human.retired and not human.has_car and self.month%12 == 0
-                                and human.money >= CAR_PRICE+HOUSING_BUFFER*6
-                                and self._rng.random() < {"status": .18, "risk": .07}.get(human.drive, .015))
+                                and available >= CAR_PRICE+CAR_MONTHLY_COST
+                                and human.mobility_motivation >= .65)
             if aspirational_car: desired = "Bil"
             terms = TRANSPORT_MODES[desired]
             owns = desired in ("Gå", "Buss") or (desired == "Cykel" and human.has_bike) or (
                 desired == "Bil" and human.has_car)
             purchase = 0 if owns else terms["purchase"]
-            if human.money < purchase+terms["monthly"]:
+            if available < purchase+terms["monthly"]:
                 affordable = []
                 for mode, values in TRANSPORT_MODES.items():
                     already_owned = mode in ("Gå", "Buss") or (mode == "Cykel" and human.has_bike) or (
                         mode == "Bil" and human.has_car)
                     price = 0 if already_owned else values["purchase"]
-                    if distance <= values["range"] and human.money >= price+values["monthly"]:
+                    if distance <= values["range"] and available >= price+values["monthly"]:
                         affordable.append(mode)
                 desired = affordable[-1] if affordable else "Gå"
                 terms = TRANSPORT_MODES[desired]
@@ -911,6 +996,9 @@ class World:
                                          "Extern", None, desired)
                 if desired == "Cykel": human.has_bike = True
                 if desired == "Bil": human.has_car = True
+                human.last_decision = f"Köpte transportsättet {desired.lower()} för {purchase} SM"
+                human.decision_reasons = [f"behövde klara en resa på {distance} block",
+                                          "kunde behålla sin trygghetsbuffert"]
             monthly = terms["monthly"]
             if monthly and human.money >= monthly:
                 human.money -= monthly; human.last_living_cost += monthly
@@ -918,6 +1006,9 @@ class World:
                 self._record_transaction("Transportdrift", monthly, "Invånare", human.id,
                                          "Extern", None, desired)
             human.transport_mode = desired
+            if desired != current and not purchase:
+                human.last_decision = f"Bytte transportsätt till {desired.lower()}"
+                human.decision_reasons = [f"anpassade resan på {distance} block till sin ekonomi"]
 
     def _apply_food(self):
         farms = [w for w in self.workplaces if w.kind == "Jordbruk"]
@@ -986,7 +1077,7 @@ class World:
                 homes_by_owner.setdefault(building.owner_id, []).append(building)
 
         expansion_ready = any(
-            owner.money >= expansion_cost+HOUSING_BUFFER
+            owner.money >= expansion_cost+max(HOUSING_BUFFER, owner.reserve_target)
             and self.month-owner.last_housing_investment_month >= 18
             and any(home.level < HOUSE_MAX_LEVEL for home in homes_by_owner.get(owner.id, []))
             for owner in self.humans
@@ -996,11 +1087,12 @@ class World:
         # every solvent resident can eventually choose to build.
         builders = [h for h in self.humans if h.id not in homes_by_owner
                     and capacity_shortage
-                    and h.money >= build_cost+HOUSING_BUFFER
+                    and h.money >= build_cost+max(HOUSING_BUFFER, h.reserve_target)
                     and self.month-h.last_housing_investment_month >= 12
                     and not (self.month % 4 == 0 and expansion_ready)]
         if builders:
-            buyer = max(builders, key=lambda h: h.housing_ambition*(1.35 if h in needy else 1)+h.money/250)
+            buyer = max(builders, key=lambda h: h.housing_motivation*(1.35 if h in needy else 1)
+                        +h.disposable_money/250+h.money/1000)
             coords = self._claim_near_activity("Bostad", "#4aa3ff", buyer.id, 1)
             if coords:
                 building = self._building_at(coords[0])
@@ -1014,6 +1106,9 @@ class World:
                                          "Kommun", None, "Nytt småhus")
                 self._record_purchase(buyer, "Boende", "Byggde eget hus", build_cost)
                 buyer.last_housing_investment_month = self.month
+                buyer.last_decision = f"Byggde eget {building.housing_type.lower()} för {build_cost} SM"
+                buyer.decision_reasons = ["ville lämna sitt tillfälliga boende",
+                                          "hade råd efter sin trygghetsbuffert"]
                 self.last_development_revenue += build_cost
                 return
 
@@ -1023,9 +1118,10 @@ class World:
         for owner_id, homes in homes_by_owner.items():
             owner = next((h for h in self.humans if h.id == owner_id), None)
             expandable = next((b for b in homes if b.level < HOUSE_MAX_LEVEL), None)
-            if (owner and expandable and owner.money >= expansion_cost+HOUSING_BUFFER
+            if (owner and expandable and owner.money >= expansion_cost+max(HOUSING_BUFFER, owner.reserve_target)
                     and self.month-owner.last_housing_investment_month >= 18):
-                extensions.append((owner.housing_ambition+owner.money/300, owner, expandable))
+                extensions.append((owner.housing_motivation+owner.disposable_money/300,
+                                   owner, expandable))
         if extensions:
             _, owner, building = max(extensions, key=lambda row: row[0])
             old_capacity = self._private_home_capacity(building)
@@ -1039,6 +1135,9 @@ class World:
                                      "Kommun", None, f"Utbyggnad nivå {building.level}")
             self._record_purchase(owner, "Boende", f"Byggde ut till nivå {building.level}", expansion_cost)
             owner.last_housing_investment_month = self.month
+            owner.last_decision = f"Byggde ut bostaden för {expansion_cost} SM"
+            owner.decision_reasons = ["ville förbättra sitt boende",
+                                      "kunde behålla sin trygghetsbuffert"]
             self.last_development_revenue += expansion_cost
 
     def _maybe_upgrade_housing(self):
@@ -1065,7 +1164,12 @@ class World:
         room_rent = self.market.room_rent
         apartment_rent = self.market.apartment_rent
         hotel_rate = self.market.hotel_rate
-        renters = [h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS and h.money >= room_rent]
+        renters = sorted(
+            (h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS
+             and h.money >= room_rent),
+            key=lambda h: (h.housing_motivation, h.disposable_money, h.money),
+            reverse=True,
+        )
         renter_index = 0
         for owner_id, owned_houses in houses_by_owner.items():
             owner = people.get(owner_id)
@@ -1100,7 +1204,11 @@ class World:
 
         hotel_by_coordinate = {coordinate: workplace for workplace in self.workplaces
                                if workplace.kind == "Hotell" for coordinate in workplace.blocks}
-        guests = [h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS and h.money >= hotel_rate]
+        guests = sorted(
+            (h for h in self.humans if h.home_kind not in PERMANENT_HOME_KINDS
+             and h.money >= hotel_rate),
+            key=lambda h: (h.housing_motivation, h.money), reverse=True,
+        )
         guest_index = 0
         for hotel in hotels:
             for _ in range(hotel.housing_units or HOTEL_ROOMS_PER_BLOCK):
@@ -1419,14 +1527,24 @@ class World:
 
     def _apply_status_purchases(self):
         for h in self.humans:
-            chance = {"status": .35, "sparsam": .04}.get(h.drive, .1)
-            if h.home_kind in PERMANENT_HOME_KINDS and not h.hungry and h.money > HOUSING_BUFFER*2 and self._rng.random() < chance:
+            cadence = {"status": 3, "risk": 5, "sparsam": 12}.get(h.drive, 7)
+            due = self.month-h.last_discretionary_purchase_month >= cadence
+            available = max(0, h.money-h.reserve_target)
+            if (due and h.home_kind in PERMANENT_HOME_KINDS and not h.hungry
+                    and available >= 10 and h.consumption_motivation >= 1.05):
                 h.money -= 10; h.status_items += 1
+                h.last_discretionary_purchase_month = self.month
+                h.last_decision = "Köpte en statuspryl för 10 SM"
+                h.decision_reasons = ["hade pengar över sin trygghetsbuffert",
+                                      f"intresset {h.drive} ökade köpviljan"]
                 self._record_purchase(h, "Fritid", "Statuspryl", 10)
                 self._settle_consumer_spending(h, 10, "Fritidsköp", "Statuspryl", ("Service", "Mataffär"))
-            elif not h.hungry and h.money > HOUSING_BUFFER+12 and self._rng.random() < .12:
+            elif due and not h.hungry and available >= 6 and h.consumption_motivation >= .75:
                 h.money -= 6
                 h.leisure_items += 1
+                h.last_discretionary_purchase_month = self.month
+                h.last_decision = "Köpte en fritidsaktivitet för 6 SM"
+                h.decision_reasons = ["grundbehoven och trygghetsbufferten var täckta"]
                 self._record_purchase(h, "Fritid", "Fritidsaktivitet", 6)
                 self._settle_consumer_spending(h, 6, "Fritidsköp", "Fritidsaktivitet", ("Service", "Hotell"))
 
@@ -1876,6 +1994,7 @@ class World:
     @staticmethod
     def from_dict(data):
         world = World(WorldConfig(data.get("name", "Ny värld"), data.get("size_label", "Medium"), data.get("region", "Medel")))
+        has_household_plans = all("reserve_target" in row for row in data.get("humans", []))
         skip = {"buildings", "humans", "workplaces", "central_bank", "transactions", "service_states", "market",
                 "name", "size_label", "region"}
         for key, value in data.items():
@@ -1910,4 +2029,6 @@ class World:
         if "last_money_supply" not in data:
             world.last_money_supply = world._money_supply()
         world.population = len(world.humans); world._update_centrality()
+        if not has_household_plans:
+            world._update_household_plans()
         return world

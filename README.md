@@ -152,6 +152,26 @@ jordbruk mer attraktivt, höga hyror stärker bostadsincitamentet och dyrare
 byggande bromsar nya projekt. Kommunens blockpris är fortfarande ett separat
 politiskt styrmedel och multipliceras med den lokala byggkostnadsnivån.
 
+### Individuella beslut
+
+Varje invånare gör en enkel hushållsplan utifrån aktuellt matpris, boende,
+transport, arbete, barn och personligt intresse. Planen räknar fram månadens
+grundkostnad och en egen trygghetsbuffert. En sparsam person vill normalt ha
+fler månaders marginal än en risktagare, medan arbetslöshet och barn ökar
+behovet av säkerhet.
+
+Pengar över bufferten kan användas till bostadsbygge, utbyggnad, företag,
+transport eller fritid. Invånaren väljer inte dessa handlingar om investeringen
+skulle bryta den egna säkerhetsnivån. Företagare och risktagare accepterar mer
+risk, lantbruksintresserade reagerar starkare på matbrist och statusdrivna
+hushåll prioriterar komfort och konsumtion. Slump finns kvar i livshändelser
+och kartans organiska variation, men inte som ensam anledning till ett större
+ekonomiskt beslut.
+
+Personvyn visar senaste beslut, grundkostnad, buffert, disponibla pengar,
+drivkrafter och de viktigaste skälen. Statistikvyn visar hur många hushåll som
+når sin egen trygghetsnivå och hur stor den genomsnittliga bufferten är.
+
 ### Bostäder
 
 Tält är tillfälliga och ger framför allt vintertid sämre energi och hälsa.
