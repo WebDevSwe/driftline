@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 
-from models import Building, CentralBank, Human, Workplace, WorldConfig
+from models import Building, CentralBank, Human, Transaction, Workplace, WorldConfig
 
 SIZE_MAP = {"Liten": 30, "Medium": 60, "Stor": 100}
 REGIONS = ["Norra", "Medel", "Syd"]
@@ -105,6 +105,7 @@ class World:
             "unemployment_support",
             "cars", "bikes", "bus_users", "retired", "deaths",
             "pension_assets", "hotel_guests", "hotel_rooms",
+            "money_supply", "external_balance", "money_discrepancy",
         )
         self.history, self.history_year = {k: [] for k in keys}, {k: [] for k in keys}
         self.last_revenue = self.last_hungry = self.last_sick = self.last_unemployed = 0
@@ -112,6 +113,7 @@ class World:
         self.last_unemployment_support = 0
         self.last_tax_revenue = 0
         self.last_development_revenue = 0
+        self.last_tax_revenue = 0
         self.last_public_investment = 0
         self.last_public_payroll = 0
         self.last_expenses = {"Basutgifter": 0, "Service": 0, "Säsong": 0}
@@ -123,6 +125,11 @@ class World:
         self.last_arrivals = self.last_departures = 0
         self.last_deaths = self.last_retirements = 0
         self.population_events = []
+        self.transactions: list[Transaction] = []
+        self.last_external_inflow = self.last_external_outflow = 0
+        self.last_money_discrepancy = 0
+        self.last_money_supply = 0
+        self._month_external_inflow = self._month_external_outflow = 0
         self.centrality: dict[tuple[int, int], float] = {}
         self._rng = random.Random(42)
         self._first_names = ["Alex", "Erik", "Sara", "Lina", "Oskar", "Nora", "Emil", "Maja",
@@ -131,6 +138,7 @@ class World:
                             "Olsson", "Persson", "Svensson", "Gustafsson", "Pettersson"]
         self._drives = ["företagare", "lantbruk", "tältliv", "status", "risk", "sparsam"]
         self._seed_world(); self._seed_population(); self._sync_tents()
+        self.last_money_supply = self._money_supply()
         self._update_centrality(); self._record_history()
 
     def _seed_world(self):
@@ -154,6 +162,8 @@ class World:
 
     def advance_month(self):
         self.month += 1
+        opening_supply = self._money_supply()
+        self._month_external_inflow = self._month_external_outflow = 0
         for human in self.humans:
             human.last_income = human.last_living_cost = 0
         self.central_bank.last_pension_contributions = 0
@@ -176,8 +186,9 @@ class World:
         self._apply_bank_interest_and_loans(); self._develop_civic_center()
         self._apply_public_budget()
         self._update_dissatisfaction(); self._update_population(self.season(), self.money - self.expenses, hungry)
-        self._cleanup_abandoned_workplaces(); self._update_centrality(); self._record_history()
-        self._record_pinned_humans()
+        self._cleanup_abandoned_workplaces(); self._update_centrality()
+        self._reconcile_money(opening_supply)
+        self._record_history(); self._record_pinned_humans()
 
     def formatted_time(self):
         return f"År {(self.month // 12) + 1}, Månad {(self.month % 12) + 1} ({self.season()})"
@@ -203,6 +214,9 @@ class World:
             "bus_users": snapshot["transport_modes"].get("Buss", 0),
             "retired": snapshot["retired"], "deaths": self.last_deaths,
             "pension_assets": self.central_bank.pension_assets,
+            "money_supply": self.last_money_supply,
+            "external_balance": self.last_external_inflow-self.last_external_outflow,
+            "money_discrepancy": self.last_money_discrepancy,
             "hotel_guests": snapshot["hotel_guests"],
             "hotel_rooms": snapshot["hotel_rooms"],
         }
@@ -212,7 +226,8 @@ class World:
             self.history[key].append(value)
             if self.month > 0 and self.month % 12 == 0:
                 annual_value = (sum(self.history[key][-12:]) if key in
-                                {"arrivals", "departures", "deaths", "unemployment_support", "expenses"}
+                                {"arrivals", "departures", "deaths", "unemployment_support", "expenses",
+                                 "external_balance", "money_discrepancy"}
                                 else value)
                 self.history_year[key].append(annual_value)
 
@@ -275,6 +290,39 @@ class World:
         wage = WORKPLACE_RULES["Basjobb"]["wage"]
         return self._rng.randint(wage // 2, wage * 3)
 
+    def _money_supply(self):
+        return (self.money+self.central_bank.reserves+sum(h.money for h in self.humans)
+                +sum(w.money for w in self.workplaces))
+
+    def _record_transaction(self, category, amount, source_type, source_id,
+                            destination_type, destination_id, description=""):
+        amount = int(amount)
+        if amount <= 0: return
+        self.transactions.append(Transaction(
+            self.month, category, amount, source_type, source_id,
+            destination_type, destination_id, description,
+        ))
+        if source_type == "Extern": self._month_external_inflow += amount
+        if destination_type == "Extern": self._month_external_outflow += amount
+        self.transactions = self.transactions[-10000:]
+
+    def _reconcile_money(self, opening_supply, transaction_start=None):
+        external_in = self._month_external_inflow
+        external_out = self._month_external_outflow
+        closing_supply = self._money_supply()
+        self.last_external_inflow = external_in
+        self.last_external_outflow = external_out
+        self.last_money_supply = closing_supply
+        self.last_money_discrepancy = closing_supply-opening_supply-(external_in-external_out)
+
+    def transaction_summary(self, month=None):
+        month = self.month if month is None else month
+        summary = {}
+        for transaction in self.transactions:
+            if transaction.month != month: continue
+            summary[transaction.category] = summary.get(transaction.category, 0)+transaction.amount
+        return summary
+
     def _random_name(self):
         return f"{self._rng.choice(self._first_names)} {self._rng.choice(self._last_names)}"
 
@@ -301,12 +349,24 @@ class World:
     def _remove_resident(self, human, reason):
         heirs = [h for h in self.humans if h is not human and h.age >= 18]
         heir = min(heirs, key=lambda h: h.money) if heirs else None
-        if heir:
+        if reason == "avled" and heir:
             heir.money += human.money
+            self._record_transaction("Arv", human.money, "Invånare", human.id,
+                                     "Invånare", heir.id, f"Arv efter {human.name}")
             for building in self.buildings:
                 if building.owner_id == human.id: building.owner_id = heir.id
             for workplace in self.workplaces:
                 if workplace.owner_id == human.id: workplace.owner_id = heir.id
+        elif reason != "avled":
+            self._record_transaction("Utflyttat kapital", human.money, "Invånare", human.id,
+                                     "Extern", None, human.name)
+            for building in self.buildings:
+                if building.owner_id == human.id: building.owner_id = None
+            for workplace in self.workplaces:
+                if workplace.owner_id == human.id: workplace.owner_id = None
+        elif human.money:
+            self._record_transaction("Dödsbo utan arvinge", human.money, "Invånare", human.id,
+                                     "Extern", None, human.name)
         self.central_bank.pension_assets = max(0, self.central_bank.pension_assets-human.pension_balance)
         self.central_bank.outstanding_loans = max(0, self.central_bank.outstanding_loans-human.loan_balance)
         if human in self.humans: self.humans.remove(human)
@@ -314,11 +374,15 @@ class World:
         self.population_events = self.population_events[-100:]
 
     def _sync_population(self):
-        while len(self.humans) < self.population: self.humans.append(self._new_human())
+        while len(self.humans) < self.population:
+            newcomer = self._new_human()
+            self.humans.append(newcomer)
+            self._record_transaction("Inflyttat kapital", newcomer.money, "Extern", None,
+                                     "Invånare", newcomer.id, newcomer.name)
         if len(self.humans) > self.population:
             leaving = sorted(self.humans, key=lambda h: h.dissatisfaction, reverse=True)
-            ids = {h.id for h in leaving[:len(self.humans)-self.population]}
-            self.humans = [h for h in self.humans if h.id not in ids]
+            for human in leaving[:len(self.humans)-self.population]:
+                self._remove_resident(human, "synkroniserades bort")
         self.population = len(self.humans)
 
     # Demand is calculated before anyone chooses a business.
@@ -399,11 +463,15 @@ class World:
             conflicts = sum(any(abs(x-b.x)+abs(y-b.y) <= 6 for b in sensitive) for x, y in blocks)
             cost += min(owner.money-cost, max(0, conflicts*self.block_cost*3))
         owner.money -= cost; self.money += cost
+        self._record_transaction("Markköp", cost, "Invånare", owner.id,
+                                 "Kommun", None, f"{kind}, {len(blocks)} block")
         self.last_development_revenue += cost
         divisor = 3 if kind == "Jordbruk" else 6
         capacity = min(rules["capacity_max"], max(rules["capacity_min"], math.ceil(len(self.humans)/divisor)))
         seed = min(owner.money, rules["wage"]*max(1, capacity))
         owner.money -= seed
+        self._record_transaction("Företagskapital", seed, "Invånare", owner.id,
+                                 "Företag", self.next_workplace_id, kind)
         workplace = Workplace(self.next_workplace_id, kind, rules["wage"], capacity,
             strain=rules["strain"], owner_id=owner.id, money=seed, blocks=blocks, demand_score=demand_score)
         self.workplaces.append(workplace)
@@ -594,22 +662,34 @@ class World:
                     self.money -= wage
                     self.last_public_payroll += wage
                     w.money += wage
-                if w.money < wage and w.kind == "Jordbruk": w.money += wage
-                if w.money < wage and w.kind in ("Mataffär", "Hotell"):
+                    self._record_transaction("Kommunal finansiering", wage, "Kommun", None,
+                                             "Företag", w.id, w.service_name)
+                if w.money < wage and w.kind in ("Jordbruk", "Mataffär", "Hotell"):
                     self._take_loan(w, wage-w.money)
                 if w.money < wage: continue
                 contribution = max(1, int(wage*.08))
-                w.money -= wage; h.money += wage-contribution; h.job_id = w.id
-                h.last_income += wage-contribution
+                tax = int(max(0, wage-contribution)*self.tax_rate)
+                net_wage = wage-contribution-tax
+                w.money -= wage; h.money += net_wage; self.money += tax; h.job_id = w.id
+                h.last_income += net_wage
                 h.pension_balance += contribution
                 self.central_bank.reserves += contribution
                 self.central_bank.pension_assets += contribution
                 self.central_bank.last_pension_contributions += contribution
+                self.last_tax_revenue += tax
+                self._record_transaction("Nettolön", net_wage, "Företag", w.id,
+                                         "Invånare", h.id, w.service_name or w.kind)
+                self._record_transaction("Inkomstskatt", tax, "Företag", w.id,
+                                         "Kommun", None, h.name)
+                self._record_transaction("Pensionsavsättning", contribution, "Företag", w.id,
+                                         "Centralbank", None, h.name)
                 payroll += wage; w.employed += 1
             factor = (0 if w.service_name else
                       {"Basjobb": 1.35, "Service": 1.25, "Industri": 1.45}.get(w.kind, 0))
             revenue = int(payroll * factor * min(1.5, max(.8, w.demand_score)))
             w.money += revenue; w.monthly_profit = revenue-payroll
+            self._record_transaction("Extern försäljning", revenue, "Extern", None,
+                                     "Företag", w.id, w.kind)
         employed = {h.id for h in self.humans if h.job_id is not None}
         self.unemployed = sum(not h.retired and h.id not in employed for h in self.humans)
 
@@ -650,6 +730,18 @@ class World:
                                        "item": item, "amount": amount})
         human.recent_purchases = human.recent_purchases[-16:]
 
+    def _settle_consumer_spending(self, human, amount, category, item, business_kinds=()):
+        businesses = [w for w in self.workplaces if w.kind in business_kinds and w.employed]
+        if businesses:
+            recipient = min(businesses, key=lambda w: self._commute_distance(human, w))
+            recipient.money += amount
+            recipient.monthly_profit += amount
+            self._record_transaction(category, amount, "Invånare", human.id,
+                                     "Företag", recipient.id, item)
+        else:
+            self._record_transaction(category, amount, "Invånare", human.id,
+                                     "Extern", None, item)
+
     def _apply_transport_choices(self):
         for human in self.humans:
             current = self._transport_mode(human)
@@ -687,12 +779,16 @@ class World:
             if purchase:
                 human.money -= purchase; human.last_living_cost += purchase
                 self._record_purchase(human, "Transport", desired, purchase)
+                self._record_transaction("Transportköp", purchase, "Invånare", human.id,
+                                         "Extern", None, desired)
                 if desired == "Cykel": human.has_bike = True
                 if desired == "Bil": human.has_car = True
             monthly = terms["monthly"]
             if monthly and human.money >= monthly:
                 human.money -= monthly; human.last_living_cost += monthly
                 self._record_purchase(human, "Transport", desired, monthly)
+                self._record_transaction("Transportdrift", monthly, "Invånare", human.id,
+                                         "Extern", None, desired)
             human.transport_mode = desired
 
     def _apply_food(self):
@@ -707,6 +803,8 @@ class World:
             food_cost = bought*self.food_price
             h.money -= food_cost; h.last_living_cost += food_cost
             self._record_purchase(h, "Mat", f"{bought} portioner", food_cost)
+            self._record_transaction("Matköp", food_cost, "Invånare", h.id,
+                                     "Matmarknad", None, f"{bought} portioner")
             h.food += bought; stock -= bought; sold += bought
             h.hungry = consumed+bought < FOOD_MONTHLY_NEED
             h.hungry_months = h.hungry_months+1 if h.hungry else 0
@@ -716,14 +814,24 @@ class World:
         farm_revenue = revenue-retail_revenue
         if farms and farm_revenue:
             total = sum(max(1, w.employed) for w in farms)
-            for w in farms:
-                share = farm_revenue*max(1, w.employed)//total
+            distributed = 0
+            for index, w in enumerate(farms):
+                share = (farm_revenue-distributed if index == len(farms)-1
+                         else farm_revenue*max(1, w.employed)//total)
+                distributed += share
                 w.money += share; w.monthly_profit += share
+                self._record_transaction("Matförsäljning", share, "Matmarknad", None,
+                                         "Företag", w.id, "Producentandel")
         if retailers and retail_revenue:
             total = sum(w.employed for w in retailers)
-            for retailer in retailers:
-                share = retail_revenue*retailer.employed//total
+            distributed = 0
+            for index, retailer in enumerate(retailers):
+                share = (retail_revenue-distributed if index == len(retailers)-1
+                         else retail_revenue*retailer.employed//total)
+                distributed += share
                 retailer.money += share; retailer.monthly_profit += share
+                self._record_transaction("Matförsäljning", share, "Matmarknad", None,
+                                         "Företag", retailer.id, "Butiksandel")
         # Unsold harvest becomes a local buffer instead of disappearing. Storage
         # is deliberately finite so several bad harvests still matter.
         for farm in farms:
@@ -771,9 +879,11 @@ class World:
                                                         for w in self.workplaces) else "Hydda")
                 building.construction_month = self.month
                 buyer.money -= HOUSE_BUILD_COST
+                self.money += HOUSE_BUILD_COST
+                self._record_transaction("Bostadsbyggande", HOUSE_BUILD_COST, "Invånare", buyer.id,
+                                         "Kommun", None, "Nytt småhus")
                 self._record_purchase(buyer, "Boende", "Byggde eget hus", HOUSE_BUILD_COST)
                 buyer.last_housing_investment_month = self.month
-                self.money += HOUSE_BUILD_COST
                 self.last_development_revenue += HOUSE_BUILD_COST
                 return
 
@@ -794,9 +904,11 @@ class World:
             if building.housing_type != "Gård":
                 building.housing_type = self._home_type(building)
             owner.money -= HOUSE_EXPANSION_COST
+            self.money += HOUSE_EXPANSION_COST
+            self._record_transaction("Bostadsbyggande", HOUSE_EXPANSION_COST, "Invånare", owner.id,
+                                     "Kommun", None, f"Utbyggnad nivå {building.level}")
             self._record_purchase(owner, "Boende", f"Byggde ut till nivå {building.level}", HOUSE_EXPANSION_COST)
             owner.last_housing_investment_month = self.month
-            self.money += HOUSE_EXPANSION_COST
             self.last_development_revenue += HOUSE_EXPANSION_COST
 
     def _maybe_upgrade_housing(self):
@@ -832,7 +944,13 @@ class World:
                     tenant.money -= RENT_COST
                     tenant.last_living_cost += RENT_COST
                     self._record_purchase(tenant, "Boende", "Rumshyra", RENT_COST)
-                    if owner: owner.money += RENT_COST
+                    if owner:
+                        owner.money += RENT_COST
+                        self._record_transaction("Privathyra", RENT_COST, "Invånare", tenant.id,
+                                                 "Invånare", owner.id, self._home_type(house))
+                    else:
+                        self._record_transaction("Privathyra", RENT_COST, "Invånare", tenant.id,
+                                                 "Extern", None, "Ägare saknas")
                     tenant.home_kind = self._home_type(house); tenant.home_owner_id = owner_id
                     tenant.home_x, tenant.home_y = house.x, house.y
         for apartment in apartments:
@@ -842,6 +960,8 @@ class World:
                 tenant.money -= APARTMENT_RENT; tenant.last_living_cost += APARTMENT_RENT
                 self._record_purchase(tenant, "Boende", "Lägenhetshyra", APARTMENT_RENT)
                 self.money += APARTMENT_RENT
+                self._record_transaction("Kommunal hyra", APARTMENT_RENT, "Invånare", tenant.id,
+                                         "Kommun", None, "Lägenhet")
                 tenant.home_kind = "Lägenhet"; tenant.home_owner_id = 0
                 tenant.home_x, tenant.home_y = apartment.x, apartment.y
 
@@ -860,6 +980,11 @@ class World:
                 if business:
                     business.money += HOTEL_RENT
                     business.monthly_profit += HOTEL_RENT
+                    self._record_transaction("Hotell", HOTEL_RENT, "Invånare", guest.id,
+                                             "Företag", business.id, "Övernattning")
+                else:
+                    self._record_transaction("Hotell", HOTEL_RENT, "Invånare", guest.id,
+                                             "Extern", None, "Verksamhet saknas")
                 guest.home_kind = "Hotell"; guest.home_owner_id = hotel.owner_id
                 guest.home_x, guest.home_y = hotel.x, hotel.y
 
@@ -911,9 +1036,12 @@ class World:
             building = homes.get((human.home_x, human.home_y))
             if building is None: continue
             cost = HOME_RUNNING_COSTS.get(self._home_type(building), 0)
-            human.money = max(0, human.money-cost)
+            paid = min(human.money, cost)
+            human.money -= paid
             human.last_living_cost += cost
-            self._record_purchase(human, "Boende", f"Drift {self._home_type(building)}", cost)
+            self._record_purchase(human, "Boende", f"Drift {self._home_type(building)}", paid)
+            self._record_transaction("Bostadsdrift", paid, "Invånare", human.id,
+                                     "Extern", None, self._home_type(building))
 
     def _building_at(self, coordinate):
         return next(b for b in reversed(self.buildings)
@@ -1010,6 +1138,9 @@ class World:
             arrivals = min(arrivals, max(1, sustainable_population-people))
             newcomers = [self._new_human() for _ in range(arrivals)]
             self.humans.extend(newcomers)
+            for newcomer in newcomers:
+                self._record_transaction("Inflyttat kapital", newcomer.money, "Extern", None,
+                                         "Invånare", newcomer.id, newcomer.name)
             self._house_newcomers_in_hotels(newcomers)
             self.last_arrivals = arrivals
 
@@ -1039,6 +1170,11 @@ class World:
             if business:
                 business.money += HOTEL_RENT
                 business.monthly_profit += HOTEL_RENT
+                self._record_transaction("Hotell", HOTEL_RENT, "Invånare", newcomer.id,
+                                         "Företag", business.id, "Första övernattning")
+            else:
+                self._record_transaction("Hotell", HOTEL_RENT, "Invånare", newcomer.id,
+                                         "Extern", None, "Verksamhet saknas")
             newcomer.home_kind = "Hotell"; newcomer.home_owner_id = hotel.owner_id
             newcomer.home_x, newcomer.home_y = hotel.x, hotel.y
             occupied[(hotel.x, hotel.y)] += 1
@@ -1049,21 +1185,25 @@ class World:
                           for n, on in self.services.items() if on)*self.budget_allocations["Service"]/100)
         winter = int(base*{"Norra": .5, "Medel": .25, "Syd": .1}.get(self.region, .25)) if self.season() == "Vinter" else 0
         seasonal = int(winter*self.budget_allocations["Säsong"]/100)
-        self.expenses = (base+service+seasonal+self.last_unemployment_support
+        base_paid = min(self.money, base); self.money -= base_paid
+        service_paid = min(self.money, service); self.money -= service_paid
+        seasonal_paid = min(self.money, seasonal); self.money -= seasonal_paid
+        self._record_transaction("Kommunal basdrift", base_paid, "Kommun", None,
+                                 "Extern", None, "Varor och entreprenader")
+        self._record_transaction("Servicedrift", service_paid, "Kommun", None,
+                                 "Extern", None, "Varor och lokaler")
+        self._record_transaction("Säsongskostnad", seasonal_paid, "Kommun", None,
+                                 "Extern", None, self.season())
+        self.expenses = (base_paid+service_paid+seasonal_paid+self.last_unemployment_support
                          +self.last_public_payroll+self.last_public_investment)
-        tax_month = self.month%12 == 0
-        payroll = sum(WORKPLACE_RULES[w.kind]["wage"]*w.employed for w in self.workplaces)
-        self.last_tax_revenue = int(payroll*12*self.tax_rate) if tax_month else 0
         self.last_revenue = self.last_tax_revenue
-        # A-kassa was transferred directly before the rest of the budget closes.
-        self.money = max(0, self.money+self.last_revenue-base-service-seasonal)
-        self.last_expenses = {"Basutgifter": base, "Service": service, "Säsong": seasonal,
+        self.last_expenses = {"Basutgifter": base_paid, "Service": service_paid, "Säsong": seasonal_paid,
                               "A-kassa utbetalningar": self.last_unemployment_support,
                               "Kommunala löner": self.last_public_payroll,
                               "Investeringar": self.last_public_investment}
         self.year_revenue += self.last_revenue+self.last_development_revenue
         self.year_expenses += self.expenses
-        if tax_month:
+        if self.month%12 == 0:
             self.last_year_revenue, self.last_year_expenses = self.year_revenue, self.year_expenses
             self.year_revenue = self.year_expenses = 0
         food_ratio = self.last_hungry/max(1, len(self.humans))
@@ -1098,7 +1238,7 @@ class World:
         support_month = service_items["A-kassa"]["transfer"]
         winter_month = int(base_month*{"Norra": .5, "Medel": .25, "Syd": .1}.get(self.region, .25)
                            *self.budget_allocations["Säsong"]/100)
-        annual_income = int(payroll_month*12*self.tax_rate)
+        annual_income = int(payroll_month*(1-.08)*self.tax_rate)*12
         annual_base = base_month*12
         annual_service = service_month*12
         annual_support = support_month*12
@@ -1128,10 +1268,12 @@ class World:
             if h.home_kind in PERMANENT_HOME_KINDS and not h.hungry and h.money > HOUSING_BUFFER*2 and self._rng.random() < chance:
                 h.money -= 10; h.status_items += 1
                 self._record_purchase(h, "Fritid", "Statuspryl", 10)
+                self._settle_consumer_spending(h, 10, "Fritidsköp", "Statuspryl", ("Service", "Mataffär"))
             elif not h.hungry and h.money > HOUSING_BUFFER+12 and self._rng.random() < .12:
                 h.money -= 6
                 h.leisure_items += 1
                 self._record_purchase(h, "Fritid", "Fritidsaktivitet", 6)
+                self._settle_consumer_spending(h, 6, "Fritidsköp", "Fritidsaktivitet", ("Service", "Hotell"))
 
     def _apply_unemployment_support(self):
         self.last_unemployment_support = 0
@@ -1145,6 +1287,8 @@ class World:
         for h in unemployed:
             h.money += payout
             h.last_income += payout
+            self._record_transaction("A-kassa", payout, "Kommun", None,
+                                     "Invånare", h.id, "Arbetslöshetsersättning")
         self.last_unemployment_support = payout*len(unemployed)
         self.money -= self.last_unemployment_support
 
@@ -1160,6 +1304,8 @@ class World:
             self.central_bank.reserves -= payout
             self.central_bank.pension_assets = max(0, self.central_bank.pension_assets-payout)
             self.central_bank.last_pension_payouts += payout
+            self._record_transaction("Pension", payout, "Centralbank", None,
+                                     "Invånare", human.id, "Pensionsutbetalning")
 
     def _apply_bankruptcy(self):
         for h in self.humans:
@@ -1177,6 +1323,9 @@ class World:
         target.loan_balance += amount; target.money += amount
         self.central_bank.reserves -= amount
         self.central_bank.outstanding_loans += amount
+        target_type = "Företag" if isinstance(target, Workplace) else "Invånare"
+        self._record_transaction("Banklån", amount, "Centralbank", None,
+                                 target_type, getattr(target, "id", None), "Nytt lån")
         return True
 
     def _apply_bank_interest_and_loans(self):
@@ -1192,6 +1341,10 @@ class World:
             self.central_bank.reserves += payment
             self.central_bank.outstanding_loans = max(0, self.central_bank.outstanding_loans-principal)
             self.central_bank.last_interest_income += min(payment, interest)
+            target_type = "Företag" if isinstance(target, Workplace) else "Invånare"
+            self._record_transaction("Lånebetalning", payment, target_type,
+                                     getattr(target, "id", None), "Centralbank", None,
+                                     f"Ränta {min(payment, interest)} SM")
 
     def _cleanup_abandoned_workplaces(self):
         kept = []
@@ -1202,6 +1355,15 @@ class World:
                 continue
             w.idle_months = w.idle_months+1 if w.employed == 0 else 0
             if w.idle_months < 18 or w.kind == "Jordbruk": kept.append(w); continue
+            owner = next((h for h in self.humans if h.id == w.owner_id), None)
+            if owner:
+                owner.money += w.money
+                self._record_transaction("Företagsavveckling", w.money, "Företag", w.id,
+                                         "Invånare", owner.id, w.kind)
+            elif w.money:
+                self._record_transaction("Företagsavveckling", w.money, "Företag", w.id,
+                                         "Extern", None, w.kind)
+            self.central_bank.outstanding_loans = max(0, self.central_bank.outstanding_loans-w.loan_balance)
             for b in self.buildings:
                 if (b.x, b.y) in w.blocks: b.active = False; b.kind = "Övergiven"; b.owner_id = None
         self.workplaces = kept
@@ -1244,6 +1406,8 @@ class World:
                 and self._housing_capacity()-(b.housing_units or APARTMENT_CAPACITY) >= len(self.humans)), None)
             if convertible is not None and self.money >= SERVICE_BUILD_COST//3:
                 self.money -= SERVICE_BUILD_COST//3
+                self._record_transaction("Kommunal investering", SERVICE_BUILD_COST//3,
+                                         "Kommun", None, "Extern", None, f"Konvertering till {name}")
                 self.last_public_investment += SERVICE_BUILD_COST//3
                 convertible.kind, convertible.color = name, SERVICE_COLORS[name]
                 convertible.housing_units, convertible.service_name = 0, name
@@ -1254,6 +1418,8 @@ class World:
             if building:
                 building.service_name = name; building.construction_month = self.month
                 self.money -= SERVICE_BUILD_COST
+                self._record_transaction("Kommunal investering", SERVICE_BUILD_COST,
+                                         "Kommun", None, "Extern", None, name)
                 self.last_public_investment += SERVICE_BUILD_COST
                 existing_services.add(name)
 
@@ -1263,6 +1429,8 @@ class World:
         if current < target and self.money >= CIVIC_BLOCK_COST:
             if self._claim_central_building("Centrum", "#c45a55"):
                 self.money -= CIVIC_BLOCK_COST
+                self._record_transaction("Kommunal investering", CIVIC_BLOCK_COST,
+                                         "Kommun", None, "Extern", None, "Centrum")
                 self.last_public_investment += CIVIC_BLOCK_COST
 
     def _develop_apartment_housing(self):
@@ -1276,6 +1444,8 @@ class World:
             building.housing_units = APARTMENT_CAPACITY
             building.construction_month = self.month
             self.money -= APARTMENT_BUILD_COST
+            self._record_transaction("Kommunal investering", APARTMENT_BUILD_COST,
+                                     "Kommun", None, "Extern", None, "Flerfamiljshus")
             self.last_public_investment += APARTMENT_BUILD_COST
 
     def _claim_central_building(self, kind, color):
@@ -1345,22 +1515,29 @@ class World:
                 "next_human_id", "next_workplace_id", "attractiveness", "crime_rate",
                 "last_arrivals", "last_departures", "last_unemployment_support",
                 "last_tax_revenue", "last_development_revenue", "last_public_investment",
-                "last_public_payroll", "last_deaths", "last_retirements", "population_events")
+                "last_public_payroll", "last_deaths", "last_retirements", "population_events",
+                "last_external_inflow", "last_external_outflow", "last_money_discrepancy",
+                "last_money_supply")
         data = {k: getattr(self, k) for k in keys}
         data.update(buildings=[b.__dict__ for b in self.buildings], humans=[h.__dict__ for h in self.humans],
                     workplaces=[w.__dict__ for w in self.workplaces],
-                    central_bank=self.central_bank.__dict__)
+                    central_bank=self.central_bank.__dict__,
+                    transactions=[t.__dict__ for t in self.transactions])
         return data
 
     @staticmethod
     def from_dict(data):
         world = World(WorldConfig(data.get("name", "Ny värld"), data.get("size_label", "Medium"), data.get("region", "Medel")))
-        skip = {"buildings", "humans", "workplaces", "central_bank", "name", "size_label", "region"}
+        skip = {"buildings", "humans", "workplaces", "central_bank", "transactions",
+                "name", "size_label", "region"}
         for key, value in data.items():
             if key not in skip and hasattr(world, key): setattr(world, key, value)
         world.buildings = [Building(**{k:v for k,v in row.items() if k in Building.__dataclass_fields__}) for row in data.get("buildings", [])]
         world.humans = [Human(**{k:v for k,v in row.items() if k in Human.__dataclass_fields__}) for row in data.get("humans", [])]
         world.workplaces = [Workplace(**{k:v for k,v in row.items() if k in Workplace.__dataclass_fields__}) for row in data.get("workplaces", [])]
+        world.transactions = [Transaction(**{k:v for k,v in row.items()
+                                              if k in Transaction.__dataclass_fields__})
+                              for row in data.get("transactions", [])]
         bank_data = data.get("central_bank", {})
         world.central_bank = CentralBank(**{k:v for k,v in bank_data.items()
                                             if k in CentralBank.__dataclass_fields__})
@@ -1369,5 +1546,7 @@ class World:
             world.central_bank.pension_assets = sum(h.pension_balance for h in world.humans)
             world.central_bank.outstanding_loans = (sum(h.loan_balance for h in world.humans)
                                                     +sum(w.loan_balance for w in world.workplaces))
+        if "last_money_supply" not in data:
+            world.last_money_supply = world._money_supply()
         world.population = len(world.humans); world._update_centrality()
         return world

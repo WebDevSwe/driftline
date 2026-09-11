@@ -106,9 +106,19 @@ i sjukvården, 80 i polisen, 100 i brandkåren och 120 i A-kasseadministrationen
 vid full finansiering. Kommunen betalar lönerna och redovisar dem separat. Om
 kassan inte räcker förblir en del av tjänsterna vakanta.
 
-Skatten tas fortfarande upp årsvis, men skatteunderlaget omfattar nu tolv
-månaders lön i stället för en enda månad. Prognosen inkluderar full utlovad
-A-kassa men inte okända framtida byggprojekt.
+Inkomstskatten hålls inne från varje faktisk månadslön och förs direkt till
+kommunen. Den skapar därmed inte längre kommunala pengar utan en motsvarande
+kostnad för löntagaren. Prognosen inkluderar full utlovad A-kassa men inte
+okända framtida byggprojekt.
+
+Alla ekonomiska rörelser sparas i en transaktionsbok med månad, kategori,
+avsändare och mottagare. Interna flöden omfattar bland annat lön, skatt,
+pensionsavsättning, hyra, matförsäljning, A-kassa och lån. Pengar som kommer
+utifrån redovisas uttryckligen som exempelvis extern försäljning eller
+inflyttat kapital; transport, fastighetsdrift och kommunala inköp som ännu
+saknar en lokal leverantör redovisas som externa utflöden. Budget- och
+statistikvyerna visar total penningmängd, extern balans och eventuell
+bokföringsavvikelse. Avvikelsen ska alltid vara exakt `0 SM`.
 
 ### Bostäder
 

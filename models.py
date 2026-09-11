@@ -101,3 +101,15 @@ class CentralBank:
     last_pension_payouts: int = 0
     last_interest_income: int = 0
 
+
+@dataclass
+class Transaction:
+    month: int
+    category: str
+    amount: int
+    source_type: str
+    source_id: int | None
+    destination_type: str
+    destination_id: int | None
+    description: str = ""
+

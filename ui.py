@@ -353,7 +353,8 @@ class App(ctk.CTk):
                 "Hotellgäster", "Hotellplatser", "Cyklar", "Bussresenärer", "Bilar",
                 "Pensionärer", "Dödsfall", "Pensionskapital",
                 "Centrumyta", "Dragningskraft", "Kriminalitet", "Kommunens pengar",
-                "Utgifter", "A-kassa", "Total ekonomi",
+                "Utgifter", "A-kassa", "Total ekonomi", "Penningmängd",
+                "Extern balans", "Bokföringsavvikelse",
             ],
             command=lambda _value: self._update_stats_window(),
             width=160,
@@ -644,6 +645,8 @@ class App(ctk.CTk):
             "A-kassa": "unemployment_support",
             "Byggnader": "buildings",
             "Total ekonomi": "economy",
+            "Penningmängd": "money_supply", "Extern balans": "external_balance",
+            "Bokföringsavvikelse": "money_discrepancy",
         }
         key = key_map.get(metric, "population")
         source = self.world.history_year if self.stats_per_year.get() else self.world.history
@@ -669,6 +672,9 @@ class App(ctk.CTk):
                 "bus_users": snapshot["transport_modes"].get("Buss", 0),
                 "retired": snapshot["retired"], "deaths": self.world.last_deaths,
                 "pension_assets": self.world.central_bank.pension_assets,
+                "money_supply": self.world.last_money_supply,
+                "external_balance": self.world.last_external_inflow-self.world.last_external_outflow,
+                "money_discrepancy": self.world.last_money_discrepancy,
             }
             data = [fallback.get(key, 0)]
         current = data[-1] if data else 0
@@ -725,6 +731,9 @@ class App(ctk.CTk):
             f"{self.world.central_bank.pension_assets} SM pensionskapital, "
             f"{self.world.central_bank.outstanding_loans} SM utlånat, "
             f"ränta {self.world.central_bank.policy_rate*100:.1f}%\n"
+            f"Penningmängd: {self.world.last_money_supply} SM    "
+            f"Externt flöde: +{self.world.last_external_inflow}/-{self.world.last_external_outflow} SM    "
+            f"Avvikelse: {self.world.last_money_discrepancy:+} SM\n"
             f"Aktiva byggnader ({stats['active_buildings']}): {buildings}"
         )
         self.stats_overview.configure(state="normal")
@@ -758,6 +767,7 @@ class App(ctk.CTk):
             "Kassa", "Prognos", "Nollskatt", "Uthållighet", "Intäkter", "Utgifter",
             "Skatteintäkter", "Markintäkter", "Investeringar", "Basutgifter",
             "Service", "Kommunala löner", "A-kassa", "Säsong", "Netto",
+            "Penningmängd", "Extern ekonomi", "Avstämning", "Transaktioner",
         ]:
             label = ctk.CTkLabel(content, text="")
             label.pack(anchor="w", pady=4)
@@ -898,6 +908,24 @@ class App(ctk.CTk):
         )
         self.budget_labels["Säsong"].configure(text=f"Säsong (senaste månad): {breakdown.get('Säsong', 0)}")
         self.budget_labels["Netto"].configure(text=f"Netto (år {year}): {net}")
+        flow_summary = self.world.transaction_summary()
+        largest_flows = sorted(flow_summary.items(), key=lambda row: row[1], reverse=True)[:6]
+        self.budget_labels["Penningmängd"].configure(
+            text=f"Total penningmängd: {self.world.last_money_supply} SM"
+        )
+        self.budget_labels["Extern ekonomi"].configure(
+            text=f"Externt denna månad: +{self.world.last_external_inflow} / "
+                 f"-{self.world.last_external_outflow} SM"
+        )
+        discrepancy = self.world.last_money_discrepancy
+        self.budget_labels["Avstämning"].configure(
+            text=f"Bokföringsavvikelse: {discrepancy:+} SM",
+            text_color="#62d890" if discrepancy == 0 else "#ff7272",
+        )
+        self.budget_labels["Transaktioner"].configure(
+            text="Största månadsflöden: "+(", ".join(f"{name} {amount} SM" for name, amount in largest_flows)
+                                           if largest_flows else "inga")
+        )
         if self.budget_service_overview is not None:
             rows = []
             for name, item in forecast["service_items"].items():

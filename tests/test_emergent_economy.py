@@ -234,15 +234,16 @@ def test_yearly_migration_statistics_are_sums_not_last_month_snapshot():
     assert world.history_year["departures"][-1] == sum(world.history["departures"][-12:])
 
 
-def test_annual_tax_uses_twelve_months_of_current_payroll():
+def test_income_tax_is_withheld_from_each_months_wages():
     world = make_world()
-    world.month = 12
     world.tax_rate = .20
-    world.workplaces.append(Workplace(90, "Basjobb", 36, 10, employed=10))
+    world.workplaces.append(Workplace(90, "Basjobb", 36, 10, money=1000))
 
-    world._apply_public_budget()
+    world._assign_jobs_and_pay_wages()
 
-    assert world.last_tax_revenue == 36*10*12*.20
+    pension = max(1, int(36*.08))
+    assert world.last_tax_revenue == 10*int((36-pension)*.20)
+    assert sum(t.amount for t in world.transactions if t.category == "Inkomstskatt") == world.last_tax_revenue
 
 
 def test_budget_forecast_exposes_break_even_tax_and_service_costs():
@@ -253,7 +254,7 @@ def test_budget_forecast_exposes_break_even_tax_and_service_costs():
 
     forecast = world.budget_snapshot()
 
-    assert forecast["annual_income"] == int(36*10*12*world.tax_rate)
+    assert forecast["annual_income"] == int(36*10*(1-.08)*world.tax_rate)*12
     assert forecast["annual_cost"] > 0
     assert forecast["break_even_tax"] > 0
     assert forecast["service_items"]["Skola"]["monthly"] > 0
@@ -442,6 +443,45 @@ def test_housing_can_form_more_than_one_neighbourhood():
             stack.extend(neighbours)
 
     assert components > 1
+
+
+def test_monthly_money_supply_reconciles_with_external_flows():
+    world = make_world()
+    world.money = 5000
+    for name in world.services:
+        world.services[name] = True
+        world.service_funding[name] = 60
+
+    for _ in range(48):
+        world.advance_month()
+        assert world.last_money_discrepancy == 0
+
+
+def test_tax_is_a_transfer_and_not_new_money():
+    world = make_world()
+    world.tax_rate = .25
+    world.workplaces = [Workplace(90, "Basjobb", 36, 10, money=1000)]
+    opening = world._money_supply()
+    start = len(world.transactions)
+
+    world._assign_jobs_and_pay_wages()
+    world._reconcile_money(opening, start)
+
+    assert world.last_tax_revenue > 0
+    assert world.last_money_discrepancy == 0
+    assert any(t.category == "Inkomstskatt" and t.destination_type == "Kommun"
+               for t in world.transactions[start:])
+
+
+def test_transactions_survive_save_and_load():
+    world = make_world()
+    world.advance_month()
+
+    restored = World.from_dict(world.to_dict())
+
+    assert restored.transactions
+    assert restored.transactions[-1] == world.transactions[-1]
+    assert restored.last_money_supply == world.last_money_supply
 
 
 def test_pinned_resident_collects_personal_history():
