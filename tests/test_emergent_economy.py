@@ -4,6 +4,7 @@ from world import (
     HOUSE_BUILD_COST,
     HOUSE_CAPACITY,
     HOUSE_EXPANSION_COST,
+    SERVICE_STAFF_PER_BUILDING,
     Building,
     Workplace,
     World,
@@ -122,9 +123,11 @@ def test_services_physically_expand_the_centre():
     world = make_world()
     world.money = 500
     world.services["Skola"] = True
+    world.service_funding["Skola"] = 100
     world._develop_civic_center()
     first_civic_area = sum(b.kind in ("Skola", "Centrum") for b in world.buildings if b.active)
     world.services["Sjukvård"] = True
+    world.service_funding["Sjukvård"] = 100
     world._develop_civic_center()
 
     assert any(b.active and b.kind == "Skola" for b in world.buildings)
@@ -136,6 +139,7 @@ def test_municipality_builds_central_apartment_housing():
     world = make_world()
     world.money = 500
     world.services["Skola"] = True
+    world.service_funding["Skola"] = 100
     world._develop_civic_center()
     while len(world.humans) < 40:
         world.humans.append(world._new_human())
@@ -155,6 +159,7 @@ def test_surplus_apartment_building_can_become_service():
         world.buildings.append(Building(x, 3, "#8b78a8", "Flerfamiljshus",
                                         housing_units=APARTMENT_CAPACITY))
     world.services["Sjukvård"] = True
+    world.service_funding["Sjukvård"] = 100
 
     world._develop_civic_center()
 
@@ -166,13 +171,20 @@ def test_unemployment_support_is_paid_by_the_municipality():
     world.services["A-kassa"] = True
     world.service_funding["A-kassa"] = 100
     world.money = 1000
+    world._develop_civic_center()
+    world._sync_public_service_jobs()
+    office = next(w for w in world.workplaces if w.service_name == "A-kassa")
+    office.employed = office.capacity
+    world.last_service_operating_paid["A-kassa"] = world._service_operating_requests()["A-kassa"]
+    world._update_service_capacity()
     balances = [human.money for human in world.humans]
+    treasury_before = world.money
 
     world._apply_unemployment_support()
 
-    assert world.last_unemployment_support == 36*world.population
-    assert world.money == 1000-world.last_unemployment_support
-    assert all(human.money == before+36 for human, before in zip(world.humans, balances))
+    assert world.last_unemployment_support == 28*world.population
+    assert world.money == treasury_before-world.last_unemployment_support
+    assert all(human.money == before+28 for human, before in zip(world.humans, balances))
 
 
 def test_farm_is_placed_as_a_contiguous_plot_outside_centre():
@@ -251,6 +263,9 @@ def test_budget_forecast_exposes_break_even_tax_and_service_costs():
     world.workplaces.append(Workplace(90, "Basjobb", 36, 10, employed=10))
     world.services["Skola"] = True
     world.service_funding["Skola"] = 100
+    world.money = 500
+    world._develop_civic_center()
+    world._sync_public_service_jobs()
 
     forecast = world.budget_snapshot()
 
@@ -265,6 +280,12 @@ def test_support_and_public_investments_are_visible_as_real_expenses():
     world.money = 1000
     world.services["A-kassa"] = True
     world.service_funding["A-kassa"] = 100
+    world._develop_civic_center()
+    world._sync_public_service_jobs()
+    office = next(w for w in world.workplaces if w.service_name == "A-kassa")
+    office.employed = office.capacity
+    world.last_service_operating_paid["A-kassa"] = world._service_operating_requests()["A-kassa"]
+    world._update_service_capacity()
     world._apply_unemployment_support()
     support = world.last_unemployment_support
     world.last_public_investment = 45
@@ -646,7 +667,84 @@ def test_crime_and_missing_services_reduce_attractiveness():
     world.service_funding["Polis"] = 100
     world.services["Sjukvård"] = True
     world.service_funding["Sjukvård"] = 100
+    world.money = 1000
+    world._develop_civic_center()
+    world._sync_public_service_jobs()
+    for workplace in world.workplaces:
+        if workplace.service_name:
+            workplace.employed = workplace.capacity
+    requests = world._service_operating_requests()
+    world.last_service_operating_paid.update(requests)
+    world._update_service_capacity()
     world._update_population(world.season(), 0, 0)
 
     assert world.crime_rate < 30
     assert world.attractiveness > without_services
+
+
+def test_service_jobs_are_limited_by_physical_buildings():
+    world = make_world()
+    world.humans.extend(world._new_human() for _ in range(1990))
+    world.population = len(world.humans)
+    world.services["Skola"] = True
+    world.service_funding["Skola"] = 100
+    world.buildings.append(Building(3, 3, "#b58ad6", "Skola", service_name="Skola"))
+
+    world._sync_public_service_jobs()
+
+    school = next(w for w in world.workplaces if w.service_name == "Skola")
+    assert school.capacity == SERVICE_STAFF_PER_BUILDING["Skola"]
+    assert world._service_target_positions("Skola") > school.capacity
+
+
+def test_service_effect_requires_staff_operations_and_access():
+    world = make_world()
+    world.services["Polis"] = True
+    world.service_funding["Polis"] = 100
+    world._update_service_capacity()
+    assert world.service_states["Polis"].effectiveness == 0
+
+    world.buildings.append(Building(3, 3, "#4169a1", "Polis", service_name="Polis"))
+    world._sync_public_service_jobs()
+    police = next(w for w in world.workplaces if w.service_name == "Polis")
+    police.employed = police.capacity
+    world._update_service_capacity()
+    assert world.service_states["Polis"].effectiveness == 0
+
+    world.last_service_operating_paid["Polis"] = world._service_operating_requests()["Polis"]
+    world._update_service_capacity()
+    assert 0 < world.service_states["Polis"].effectiveness < 1
+
+
+def test_full_police_funding_reduces_but_never_eliminates_crime():
+    world = make_world()
+    world.services["Polis"] = True
+    world.service_funding["Polis"] = 100
+    world.buildings.append(Building(3, 3, "#4169a1", "Polis", service_name="Polis"))
+    world._sync_public_service_jobs()
+    police = next(w for w in world.workplaces if w.service_name == "Polis")
+    police.employed = police.capacity
+    world.last_service_operating_paid["Polis"] = world._service_operating_requests()["Polis"]
+    world._update_service_capacity()
+
+    world._update_population(world.season(), 0, 0)
+
+    assert world.service_states["Polis"].effectiveness < 1
+    assert world.crime_rate >= .5
+
+
+def test_service_capacity_survives_save_and_load():
+    world = make_world()
+    world.services["Skola"] = True
+    world.service_funding["Skola"] = 100
+    world.buildings.append(Building(3, 3, "#b58ad6", "Skola", service_name="Skola"))
+    world._sync_public_service_jobs()
+    school = next(w for w in world.workplaces if w.service_name == "Skola")
+    school.employed = school.capacity
+    world.last_service_operating_paid["Skola"] = world._service_operating_requests()["Skola"]
+    world._update_service_capacity()
+
+    loaded = World.from_dict(world.to_dict())
+
+    assert loaded.service_states["Skola"].staffed == school.capacity
+    assert loaded.service_states["Skola"].effectiveness == world.service_states["Skola"].effectiveness

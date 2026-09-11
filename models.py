@@ -113,3 +113,19 @@ class Transaction:
     destination_id: int | None
     description: str = ""
 
+
+@dataclass
+class ServiceState:
+    name: str
+    demand: float = 0.0
+    target_positions: int = 0
+    facility_positions: int = 0
+    staffed: int = 0
+    requested_operating: int = 0
+    paid_operating: int = 0
+    supply_ratio: float = 0.0
+    access_ratio: float = 0.0
+    coverage: float = 0.0
+    effectiveness: float = 0.0
+    workload: float = 0.0
+

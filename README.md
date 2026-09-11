@@ -82,11 +82,13 @@ läggs som sammanhängande 2×2-fält långt från det aktuella centrumet.
 
 ### A-kassa
 
-A-kassa aktiveras när dess servicebudget höjs över noll. Vid 100 procent
-motsvarar ersättningen baslönen `36 SM` per
-arbetslös och månad. Pengarna överförs från kommunens kassa till invånaren och
-visas separat som `A-kassa till invånare` i budgetfönstret. Om kommunen inte har
-råd sänks utbetalningen för alla; systemet skapar inte längre nya pengar.
+A-kassa aktiveras när dess servicebudget höjs över noll. Ersättningsnivån går
+från 25 till 80 procent av baslönen beroende på ambitionsnivå. Bara så många
+arbetslösa som det bemannade och finansierade A-kassekontoret hinner handlägga
+får ersättning den månaden; längst arbetslösa och ekonomiskt mest pressade går
+först. Pengarna överförs från kommunens kassa till invånaren och visas separat
+som `A-kassa till invånare` i budgetfönstret. Om kommunen inte har råd sänks
+utbetalningen; systemet skapar inte längre nya pengar.
 Ersättningen betalas före månadens mat- och boendeköp så att den kan stimulera
 jordbruk, handel, hyresvärdar och hotell.
 
@@ -96,15 +98,22 @@ Budgetfönstret skiljer på pengar i kassan, avslutat årsutfall och en prognos 
 de kommande tolv månaderna. Prognosen använder dagens befolkning, löneunderlag,
 arbetslöshet och servicenivå och visar beräknade intäkter, drift, A-kassa,
 årsresultat, kassans uthållighet och skattesatsen som ungefär ger nollresultat.
-Varje service visar aktiveringsstatus, finansieringsnivå samt kostnad per månad
-och år. Kommunala bygginvesteringar och privata bygg-/markintäkter redovisas
-separat i månaden de uppstår.
+Varje service visar aktiveringsstatus, politisk ambitionsnivå, tjänstemål,
+lokalernas kapacitet, faktiskt bemannade tjänster, täckning, verklig effekt,
+belastning samt kostnad per månad och år. Kommunala bygginvesteringar och
+privata bygg-/markintäkter redovisas separat i månaden de uppstår.
 
 Finansierad service skapar riktiga kommunala arbetsplatser i relation till
 befolkningen: ungefär en tjänst per 20 invånare i skolan, 18 i barnomsorgen, 30
 i sjukvården, 80 i polisen, 100 i brandkåren och 120 i A-kasseadministrationen
-vid full finansiering. Kommunen betalar lönerna och redovisar dem separat. Om
-kassan inte räcker förblir en del av tjänsterna vakanta.
+vid full finansiering. En fysisk byggnad rymmer bara ett begränsat antal
+tjänster, så växande behov leder till fler skolor, kliniker och andra
+servicebyggnader. Kommunen betalar lönerna och redovisar dem separat.
+
+Serviceeffekten beräknas inte direkt från reglaget. Den kräver samtidigt
+lokaler, personal, betald drift och geografisk tillgänglighet från invånarnas
+adresser. Avtagande marginalnytta gör dessutom att 100 procent minskar risker
+utan att garantera noll kriminalitet, noll sjukdom eller perfekt service.
 
 Inkomstskatten hålls inne från varje faktisk månadslön och förs direkt till
 kommunen. Den skapar därmed inte längre kommunala pengar utan en motsvarande

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 
-from models import Building, CentralBank, Human, Transaction, Workplace, WorldConfig
+from models import Building, CentralBank, Human, ServiceState, Transaction, Workplace, WorldConfig
 
 SIZE_MAP = {"Liten": 30, "Medium": 60, "Stor": 100}
 REGIONS = ["Norra", "Medel", "Syd"]
@@ -48,6 +48,10 @@ HOME_RUNNING_COSTS = {"Hydda": 1, "Stuga": 3, "Villa": 6, "Stort hus": 10, "Går
 SERVICE_STAFF_PER_RESIDENT = {
     "Polis": 1/80, "Brandkår": 1/100, "Sjukvård": 1/30,
     "Skola": 1/20, "Barnomsorg": 1/18, "A-kassa": 1/120,
+}
+SERVICE_STAFF_PER_BUILDING = {
+    "Polis": 8, "Brandkår": 6, "Sjukvård": 10,
+    "Skola": 12, "Barnomsorg": 12, "A-kassa": 6,
 }
 
 SERVICE_COLORS = {
@@ -95,6 +99,8 @@ class World:
         self.services = {name: False for name in names}
         self.service_funding = {name: 0 for name in names}
         self.service_costs = dict(zip(names, (6, 5, 7, 6, 4, 3)))
+        self.service_states = {name: ServiceState(name) for name in names}
+        self.last_service_operating_paid = {name: 0 for name in names}
         self.budget_allocations = {"Basutgifter": 100, "Service": 100, "Säsong": 100}
         self.healthcare_extra_per_sick = 2
         keys = (
@@ -106,6 +112,7 @@ class World:
             "cars", "bikes", "bus_users", "retired", "deaths",
             "pension_assets", "hotel_guests", "hotel_rooms",
             "money_supply", "external_balance", "money_discrepancy",
+            "service_coverage", "service_effectiveness",
         )
         self.history, self.history_year = {k: [] for k in keys}, {k: [] for k in keys}
         self.last_revenue = self.last_hungry = self.last_sick = self.last_unemployed = 0
@@ -175,16 +182,16 @@ class World:
         self.last_public_investment = 0
         self.last_public_payroll = 0
         self._sync_population(); self._age_population(); self._develop_apartment_housing()
-        self._evaluate_housing_market()
+        self._evaluate_housing_market(); self._develop_civic_center()
         self._spawn_new_businesses(); self._sync_public_service_jobs()
-        self._assign_jobs_and_pay_wages(); self._apply_transport_choices()
+        self._assign_jobs_and_pay_wages(); self._update_service_capacity(); self._apply_transport_choices()
         self._apply_unemployment_support(); self._apply_pensions()
         hungry = self._apply_food()
         self._assign_housing(); self._sync_tents(); self._apply_housing_running_costs()
         self._update_health(hungry); self._apply_status_purchases()
         self.last_hungry = hungry
-        self._apply_bank_interest_and_loans(); self._develop_civic_center()
-        self._apply_public_budget()
+        self._apply_bank_interest_and_loans(); self._apply_public_budget()
+        self._update_service_capacity()
         self._update_dissatisfaction(); self._update_population(self.season(), self.money - self.expenses, hungry)
         self._cleanup_abandoned_workplaces(); self._update_centrality()
         self._reconcile_money(opening_supply)
@@ -198,6 +205,8 @@ class World:
 
     def _record_history(self):
         snapshot = self.statistics_snapshot()
+        active_service_states = [state for name, state in self.service_states.items()
+                                 if self.services.get(name)]
         values = {
             "population": len(self.humans), "money": self.money, "expenses": self.expenses,
             "buildings": snapshot["active_buildings"], "economy": self.money-self.expenses,
@@ -217,6 +226,10 @@ class World:
             "money_supply": self.last_money_supply,
             "external_balance": self.last_external_inflow-self.last_external_outflow,
             "money_discrepancy": self.last_money_discrepancy,
+            "service_coverage": round(100*sum(s.coverage for s in active_service_states)
+                                      /max(1, len(active_service_states)), 1),
+            "service_effectiveness": round(100*sum(s.effectiveness for s in active_service_states)
+                                           /max(1, len(active_service_states)), 1),
             "hotel_guests": snapshot["hotel_guests"],
             "hotel_rooms": snapshot["hotel_rooms"],
         }
@@ -261,6 +274,17 @@ class World:
             "expanded_houses": sum(b.level > 1 for b in private_houses),
             "apartment_buildings": len(apartments),
             "service_buildings": service_buildings,
+            "service_states": {
+                name: {
+                    "target": state.target_positions,
+                    "facility": state.facility_positions,
+                    "staffed": state.staffed,
+                    "coverage": state.coverage,
+                    "effectiveness": state.effectiveness,
+                    "workload": state.workload,
+                }
+                for name, state in self.service_states.items()
+            },
             "central_area": sum(b.kind in central_kinds for b in active),
             "average_money": round(sum(h.money for h in self.humans)/max(1, len(self.humans)), 1),
             "cars": sum(h.transport_mode == "Bil" or h.has_car for h in self.humans),
@@ -1098,20 +1122,15 @@ class World:
         homeless_ratio = sum(h.home_kind == "Bostadslös" for h in self.humans)/people
         unemployment_ratio = self.unemployed/people
 
-        police_strength = 0
-        if self.services.get("Polis"):
-            police_strength = .25+.75*self.service_funding.get("Polis", 0)/100
-        self.crime_rate = max(0, min(100,
-            4+unemployment_ratio*32+homeless_ratio*24+(100-self.stability)*.18-police_strength*35
+        police_strength = self.service_states["Polis"].effectiveness
+        self.crime_rate = max(.5, min(100,
+            4+unemployment_ratio*32+homeless_ratio*24+(100-self.stability)*.18-police_strength*22
         ))
 
         expected_services = 0
         for threshold in (20, 35, 50, 75, 110):
             if people >= threshold: expected_services += 1
-        active_service = sum(
-            .25+.75*self.service_funding.get(name, 0)/100
-            for name, enabled in self.services.items() if enabled
-        )
+        active_service = sum(state.effectiveness for state in self.service_states.values())
         service_gap = max(0, expected_services-active_service)
 
         low_tax_bonus = max(-20, min(24, (0.20-self.tax_rate)*125))
@@ -1181,8 +1200,12 @@ class World:
 
     def _apply_public_budget(self):
         base = int(len(self.humans)*.4*self.budget_allocations["Basutgifter"]/100)
-        service = int(sum(self.service_costs[n]*max(.2, self.service_funding[n]/100)
-                          for n, on in self.services.items() if on)*self.budget_allocations["Service"]/100)
+        service_requests = self._service_operating_requests()
+        allocated_requests = {
+            name: int(cost*self.budget_allocations["Service"]/100)
+            for name, cost in service_requests.items()
+        }
+        service = sum(allocated_requests.values())
         winter = int(base*{"Norra": .5, "Medel": .25, "Syd": .1}.get(self.region, .25)) if self.season() == "Vinter" else 0
         seasonal = int(winter*self.budget_allocations["Säsong"]/100)
         base_paid = min(self.money, base); self.money -= base_paid
@@ -1190,8 +1213,17 @@ class World:
         seasonal_paid = min(self.money, seasonal); self.money -= seasonal_paid
         self._record_transaction("Kommunal basdrift", base_paid, "Kommun", None,
                                  "Extern", None, "Varor och entreprenader")
-        self._record_transaction("Servicedrift", service_paid, "Kommun", None,
-                                 "Extern", None, "Varor och lokaler")
+        self.last_service_operating_paid = {name: 0 for name in self.services}
+        remaining = service_paid
+        outstanding = service
+        for name, requested in allocated_requests.items():
+            paid = (remaining if requested == outstanding else
+                    min(remaining, round(service_paid*requested/max(1, service))))
+            self.last_service_operating_paid[name] = paid
+            remaining -= paid
+            outstanding -= requested
+            self._record_transaction("Servicedrift", paid, "Kommun", None,
+                                     "Extern", None, name)
         self._record_transaction("Säsongskostnad", seasonal_paid, "Kommun", None,
                                  "Extern", None, self.season())
         self.expenses = (base_paid+service_paid+seasonal_paid+self.last_unemployment_support
@@ -1218,21 +1250,31 @@ class World:
         base_month = int(people*.4*self.budget_allocations["Basutgifter"]/100)
         service_items = {}
         service_month = 0
+        operating_requests = self._service_operating_requests()
         for name, enabled in self.services.items():
             funding = self.service_funding.get(name, 0)
-            administration = (int(self.service_costs[name]*max(.2, funding/100)
-                              *self.budget_allocations["Service"]/100) if enabled else 0)
-            transfer = (int(WORKPLACE_RULES["Basjobb"]["wage"]*funding/100)*self.unemployed
-                        if name == "A-kassa" and enabled else 0)
+            administration = int(operating_requests[name]*self.budget_allocations["Service"]/100)
             public_job = next((w for w in self.workplaces if w.service_name == name), None)
             jobs = public_job.capacity if public_job else (
-                max(1, math.ceil(people*SERVICE_STAFF_PER_RESIDENT[name]*funding/100))
+                min(self._service_target_positions(name),
+                    self._service_facility_positions(name))
                 if enabled and funding > 0 else 0
             )
+            processable = min(self.unemployed, jobs*30)
+            replacement = .25+.55*funding/100
+            transfer = (int(WORKPLACE_RULES["Basjobb"]["wage"]*replacement)*processable
+                        if name == "A-kassa" and enabled else 0)
             payroll = jobs*WORKPLACE_RULES["Service"]["wage"]
+            state = self.service_states[name]
             service_items[name] = {"enabled": enabled, "funding": funding,
                                    "administration": administration, "transfer": transfer,
                                    "jobs": jobs, "payroll": payroll,
+                                   "demand": state.demand,
+                                   "facility_positions": state.facility_positions,
+                                   "staffed": state.staffed,
+                                   "coverage": state.coverage,
+                                   "effectiveness": state.effectiveness,
+                                   "workload": state.workload,
                                    "monthly": administration+transfer+payroll}
             service_month += administration+payroll
         support_month = service_items["A-kassa"]["transfer"]
@@ -1280,16 +1322,25 @@ class World:
         if not self.services.get("A-kassa"): return
         unemployed = [h for h in self.humans if h.job_id is None and not h.retired]
         if not unemployed: return
-        requested = int(WORKPLACE_RULES["Basjobb"]["wage"]*self.service_funding["A-kassa"]/100)
+        state = self.service_states["A-kassa"]
+        processable = min(len(unemployed), int(state.staffed*30*state.supply_ratio*state.access_ratio))
+        if processable <= 0: return
+        replacement = .25+.55*self.service_funding["A-kassa"]/100
+        requested = int(WORKPLACE_RULES["Basjobb"]["wage"]*replacement)
         if requested <= 0: return
-        payout = min(requested, self.money//len(unemployed))
+        recipients = sorted(
+            unemployed,
+            key=lambda h: (h.unemployed_months, h.financial_stress_months, -h.money),
+            reverse=True,
+        )[:processable]
+        payout = min(requested, self.money//len(recipients))
         if payout <= 0: return
-        for h in unemployed:
+        for h in recipients:
             h.money += payout
             h.last_income += payout
             self._record_transaction("A-kassa", payout, "Kommun", None,
                                      "Invånare", h.id, "Arbetslöshetsersättning")
-        self.last_unemployment_support = payout*len(unemployed)
+        self.last_unemployment_support = payout*len(recipients)
         self.money -= self.last_unemployment_support
 
     def _apply_pensions(self):
@@ -1369,36 +1420,114 @@ class World:
         self.workplaces = kept
 
     # ---------- Physical civic centre and municipal housing ----------
+    def _service_demand(self, name):
+        people = len(self.humans)
+        if people == 0:
+            return 0.0
+        demand = people*SERVICE_STAFF_PER_RESIDENT[name]
+        if name == "Polis":
+            demand += self.crime_rate*people/2500
+        elif name == "Brandkår":
+            demand += sum(b.active for b in self.buildings)/180
+        elif name == "Sjukvård":
+            demand += sum(h.sick for h in self.humans)/4
+        elif name == "A-kassa":
+            demand += self.unemployed/30
+        return max(0.0, demand)
+
+    def _service_target_positions(self, name):
+        if not self.services.get(name) or self.service_funding.get(name, 0) <= 0:
+            return 0
+        return math.ceil(self._service_demand(name)*self.service_funding[name]/100)
+
+    def _service_buildings(self, name):
+        return [b for b in self.buildings if b.active and b.kind == name]
+
+    def _service_facility_positions(self, name):
+        return len(self._service_buildings(name))*SERVICE_STAFF_PER_BUILDING[name]
+
+    def _service_access_ratio(self, name):
+        buildings = self._service_buildings(name)
+        if not buildings or not self.humans:
+            return 0.0
+        access = 0.0
+        for human in self.humans:
+            if human.home_x is None or human.home_y is None:
+                access += .35
+                continue
+            distance = min(abs(human.home_x-b.x)+abs(human.home_y-b.y) for b in buildings)
+            travel_range = TRANSPORT_MODES[self._transport_mode(human)]["range"]
+            access += 1/(1+distance/max(4, travel_range))
+        return access/len(self.humans)
+
+    def _service_operating_requests(self):
+        requests = {}
+        for name in self.services:
+            if not self.services[name] or self.service_funding.get(name, 0) <= 0:
+                requests[name] = 0
+                continue
+            workplace = next((w for w in self.workplaces if w.service_name == name), None)
+            staffed = workplace.employed if workplace else 0
+            buildings = len(self._service_buildings(name))
+            requests[name] = buildings*self.service_costs[name] + math.ceil(
+                staffed*self.service_costs[name]/2
+            )
+        return requests
+
+    def _update_service_capacity(self):
+        requests = self._service_operating_requests()
+        for name, state in self.service_states.items():
+            workplace = next((w for w in self.workplaces if w.service_name == name), None)
+            state.demand = self._service_demand(name)
+            state.target_positions = self._service_target_positions(name)
+            state.facility_positions = self._service_facility_positions(name)
+            state.staffed = workplace.employed if workplace else 0
+            state.requested_operating = requests[name]
+            state.paid_operating = self.last_service_operating_paid.get(name, 0)
+            state.supply_ratio = (min(1.0, state.paid_operating/state.requested_operating)
+                                  if state.requested_operating else 0.0)
+            state.access_ratio = self._service_access_ratio(name)
+            delivered = state.staffed*state.supply_ratio
+            state.coverage = min(1.0, delivered/max(.01, state.demand))
+            state.workload = state.demand/max(.01, delivered) if state.demand else 0.0
+            # Diminishing returns ensure that even a fully funded service reduces
+            # risk instead of becoming a switch that guarantees a perfect result.
+            state.effectiveness = ((1-math.exp(-2*delivered/max(.01, state.demand)))
+                                   *state.access_ratio if state.demand else 0.0)
+
     def _sync_public_service_jobs(self):
         public = {w.service_name: w for w in self.workplaces if w.service_name}
         active_names = set()
         for name, enabled in self.services.items():
-            building = next((b for b in self.buildings if b.active and b.kind == name), None)
+            buildings = self._service_buildings(name)
             funding = self.service_funding.get(name, 0)
-            if not enabled or funding <= 0 or building is None: continue
+            if not enabled or funding <= 0 or not buildings: continue
             active_names.add(name)
-            capacity = max(1, math.ceil(len(self.humans)*SERVICE_STAFF_PER_RESIDENT[name]*funding/100))
+            capacity = min(self._service_target_positions(name), self._service_facility_positions(name))
+            if capacity <= 0: continue
             workplace = public.get(name)
             if workplace is None:
                 workplace = Workplace(
                     self.next_workplace_id, "Service", WORKPLACE_RULES["Service"]["wage"], capacity,
                     strain=WORKPLACE_RULES["Service"]["strain"], owner_id=None, money=0,
-                    blocks=[(building.x, building.y)], demand_score=10, service_name=name,
+                    blocks=[(b.x, b.y) for b in buildings], demand_score=10, service_name=name,
                 )
                 self.next_workplace_id += 1
                 self.workplaces.append(workplace)
             else:
                 workplace.capacity = capacity
-                workplace.blocks = [(building.x, building.y)]
+                workplace.blocks = [(b.x, b.y) for b in buildings]
         self.workplaces = [w for w in self.workplaces if not w.service_name or w.service_name in active_names]
 
     def _develop_civic_center(self):
-        active_services = [name for name, enabled in self.services.items() if enabled]
+        active_services = [name for name, enabled in self.services.items()
+                           if enabled and self.service_funding.get(name, 0) > 0]
         service_kinds = set(SERVICE_COLORS)
-        existing_services = {b.kind for b in self.buildings if b.active and b.kind in service_kinds}
+        existing_services = [b for b in self.buildings if b.active and b.kind in service_kinds]
 
         for name in active_services:
-            if name in existing_services: continue
+            desired = math.ceil(self._service_target_positions(name)/SERVICE_STAFF_PER_BUILDING[name])
+            if len(self._service_buildings(name)) >= desired: continue
             # A sufficiently empty apartment block is deliberately reusable as
             # school, clinic or another public building.
             convertible = next((b for b in self.buildings
@@ -1411,7 +1540,7 @@ class World:
                 self.last_public_investment += SERVICE_BUILD_COST//3
                 convertible.kind, convertible.color = name, SERVICE_COLORS[name]
                 convertible.housing_units, convertible.service_name = 0, name
-                existing_services.add(name)
+                existing_services.append(convertible)
                 continue
             if self.money < SERVICE_BUILD_COST: continue
             building = self._claim_central_building(name, SERVICE_COLORS[name])
@@ -1421,7 +1550,7 @@ class World:
                 self._record_transaction("Kommunal investering", SERVICE_BUILD_COST,
                                          "Kommun", None, "Extern", None, name)
                 self.last_public_investment += SERVICE_BUILD_COST
-                existing_services.add(name)
+                existing_services.append(building)
 
         # Service buildings pull additional mixed-use centre blocks around them.
         target = len(existing_services)+len(self.humans)//75
@@ -1521,6 +1650,8 @@ class World:
         data = {k: getattr(self, k) for k in keys}
         data.update(buildings=[b.__dict__ for b in self.buildings], humans=[h.__dict__ for h in self.humans],
                     workplaces=[w.__dict__ for w in self.workplaces],
+                    service_states={name: state.__dict__ for name, state in self.service_states.items()},
+                    last_service_operating_paid=self.last_service_operating_paid,
                     central_bank=self.central_bank.__dict__,
                     transactions=[t.__dict__ for t in self.transactions])
         return data
@@ -1528,7 +1659,7 @@ class World:
     @staticmethod
     def from_dict(data):
         world = World(WorldConfig(data.get("name", "Ny värld"), data.get("size_label", "Medium"), data.get("region", "Medel")))
-        skip = {"buildings", "humans", "workplaces", "central_bank", "transactions",
+        skip = {"buildings", "humans", "workplaces", "central_bank", "transactions", "service_states",
                 "name", "size_label", "region"}
         for key, value in data.items():
             if key not in skip and hasattr(world, key): setattr(world, key, value)
@@ -1538,6 +1669,11 @@ class World:
         world.transactions = [Transaction(**{k:v for k,v in row.items()
                                               if k in Transaction.__dataclass_fields__})
                               for row in data.get("transactions", [])]
+        for name, row in data.get("service_states", {}).items():
+            if name in world.service_states:
+                world.service_states[name] = ServiceState(**{
+                    k: v for k, v in row.items() if k in ServiceState.__dataclass_fields__
+                })
         bank_data = data.get("central_bank", {})
         world.central_bank = CentralBank(**{k:v for k,v in bank_data.items()
                                             if k in CentralBank.__dataclass_fields__})

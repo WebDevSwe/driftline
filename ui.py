@@ -354,7 +354,7 @@ class App(ctk.CTk):
                 "Pensionärer", "Dödsfall", "Pensionskapital",
                 "Centrumyta", "Dragningskraft", "Kriminalitet", "Kommunens pengar",
                 "Utgifter", "A-kassa", "Total ekonomi", "Penningmängd",
-                "Extern balans", "Bokföringsavvikelse",
+                "Servicetäckning", "Serviceeffekt", "Extern balans", "Bokföringsavvikelse",
             ],
             command=lambda _value: self._update_stats_window(),
             width=160,
@@ -646,6 +646,7 @@ class App(ctk.CTk):
             "Byggnader": "buildings",
             "Total ekonomi": "economy",
             "Penningmängd": "money_supply", "Extern balans": "external_balance",
+            "Servicetäckning": "service_coverage", "Serviceeffekt": "service_effectiveness",
             "Bokföringsavvikelse": "money_discrepancy",
         }
         key = key_map.get(metric, "population")
@@ -675,6 +676,12 @@ class App(ctk.CTk):
                 "money_supply": self.world.last_money_supply,
                 "external_balance": self.world.last_external_inflow-self.world.last_external_outflow,
                 "money_discrepancy": self.world.last_money_discrepancy,
+                "service_coverage": (round(100*sum(s.coverage for n, s in self.world.service_states.items()
+                                                    if self.world.services.get(n))
+                                           /max(1, sum(self.world.services.values())), 1)),
+                "service_effectiveness": (round(100*sum(s.effectiveness for n, s in self.world.service_states.items()
+                                                         if self.world.services.get(n))
+                                                /max(1, sum(self.world.services.values())), 1)),
             }
             data = [fallback.get(key, 0)]
         current = data[-1] if data else 0
@@ -698,6 +705,12 @@ class App(ctk.CTk):
         services = "  ".join(
             f"{name}: {count}" for name, count in stats["service_buildings"].items() if count
         ) or "Inga fysiska servicebyggnader"
+        service_capacity = "  ".join(
+            f"{name}: {state['staffed']}/{state['target']} bem, "
+            f"{round(state['coverage']*100)}% täckning, {round(state['effectiveness']*100)}% effekt"
+            for name, state in stats["service_states"].items()
+            if self.world.services.get(name)
+        ) or "Ingen aktiv service"
         home_types = "  ".join(
             f"{kind}: {count}" for kind, count in sorted(stats["home_types"].items())
         )
@@ -722,7 +735,8 @@ class App(ctk.CTk):
             f"Transport: gå {stats['transport_modes']['Gå']}, cykel {stats['transport_modes']['Cykel']}, "
             f"buss {stats['transport_modes']['Buss']}, bil {stats['transport_modes']['Bil']}\n"
             f"Boendeformer: {home_types}\n"
-            f"Servicebyggnader: {services}\n\n"
+            f"Servicebyggnader: {services}\n"
+            f"Servicekapacitet: {service_capacity}\n\n"
             "EKONOMI OCH SKAPAT INNEHÅLL\n"
             f"Kommunens pengar: {self.world.money} SM    Utgifter: {self.world.expenses} SM    "
             f"A-kassa utbetald: {self.world.last_unemployment_support} SM\n"
@@ -848,7 +862,7 @@ class App(ctk.CTk):
             self.service_sliders[name] = (slider, value_label)
             slider.set(self.world.service_funding.get(name, 0))
 
-        ctk.CTkLabel(content, text="Beräknad servicekostnad:").pack(anchor="w", pady=(12, 4))
+        ctk.CTkLabel(content, text="Servicekapacitet och beräknad kostnad:").pack(anchor="w", pady=(12, 4))
         self.budget_service_overview = ctk.CTkLabel(
             content, text="", anchor="w", justify="left", font=("Consolas", 12)
         )
@@ -930,12 +944,16 @@ class App(ctk.CTk):
             rows = []
             for name, item in forecast["service_items"].items():
                 status = "PÅ " if item["enabled"] else "AV "
-                detail = (f"{item['jobs']:>3} jobb  lön {item['payroll']:>5}  "
-                          f"drift {item['administration']:>3}")
+                coverage = round(item["coverage"]*100)
+                effect = round(item["effectiveness"]*100)
+                load = f"{item['workload']:.1f}x" if item["staffed"] else "—"
+                detail = (f"mål {item['jobs']:>3}  lokal {item['facility_positions']:>3}  "
+                          f"bem {item['staffed']:>3}  täck {coverage:>3}%  effekt {effect:>3}%  "
+                          f"bel {load:>4}  drift {item['administration']:>3}")
                 if item["transfer"]:
                     detail += f" + stöd {item['transfer']:>5} SM/mån"
                 rows.append(
-                    f"{name:<12} {status} {item['funding']:>3}%   {detail:<34} "
+                    f"{name:<12} {status} {item['funding']:>3}%   {detail}  "
                     f"{item['monthly']*12:>7} SM/år"
                 )
             self.budget_service_overview.configure(text="\n".join(rows))
@@ -1119,7 +1137,15 @@ class App(ctk.CTk):
             if kind == "Hotell": impacts.append("+ Tar emot nyinflyttade innan de får permanent bostad")
             if kind == "Jordbruk": impacts.append("+ Producerar lokal mat och gör fortsatt inflyttning möjlig")
             if kind in ("Centrum", "Torg"): impacts.append("+ Höjer områdets centralitet och drar service närmare")
-            if kind in self.world.services: impacts.append("+ Samhällsservice skapar både välfärd och kommunala jobb")
+            if kind in self.world.services:
+                state = self.world.service_states[kind]
+                impacts.append(
+                    f"+ {state.staffed}/{state.target_positions} tjänster bemannade, "
+                    f"{round(state.coverage*100)}% täckning och "
+                    f"{round(state.effectiveness*100)}% faktisk effekt"
+                )
+                if state.workload > 1:
+                    impacts.append(f"− Belastningen är {state.workload:.1f} gånger tillgänglig kapacitet")
             if kind == "Industri": impacts.append("+ Många jobb och högre löner, men dyr placering nära bostäder")
         if workplaces:
             impacts.append(f"+ {sum(w.employed for w in workplaces)} löner förs ut i hushållsekonomin varje månad")
