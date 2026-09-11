@@ -656,17 +656,20 @@ class World:
         return value
 
     def _update_business_plans(self):
-        signals = self._market_signals()
         people = {h.id: h for h in self.humans}
         for workplace in self.workplaces:
             workplace.age_months += 1
             workplace.lifetime_profit += workplace.monthly_profit
+            workplace.last_decision = "Behåller kapaciteten och bygger reserv"
             if workplace.monthly_profit > 0:
                 workplace.profitable_months += 1
-                workplace.loss_months = max(0, workplace.loss_months-1)
+                workplace.loss_months = 0
             elif workplace.monthly_profit < 0:
                 workplace.loss_months += 1
+                workplace.profitable_months = 0
+            else:
                 workplace.profitable_months = max(0, workplace.profitable_months-1)
+                workplace.loss_months = max(0, workplace.loss_months-1)
 
             expected_wage = max(1, round(workplace.wage*self.market.wage_index))
             workplace.reserve_target = expected_wage*max(1, workplace.capacity)*2
@@ -675,7 +678,7 @@ class World:
                 continue
 
             rules = WORKPLACE_RULES[workplace.kind]
-            demand = signals.get(workplace.kind, workplace.demand_score)
+            demand = self._operating_demand(workplace.kind)
             can_change = self.month-workplace.last_capacity_change_month >= 6
             absolute_max = rules["capacity_max"]*4
             if (can_change and workplace.profitable_months >= 3 and demand >= .45
@@ -702,6 +705,7 @@ class World:
                                              f"{workplace.kind}: +{increase} jobb")
                     workplace.capacity += increase
                     workplace.last_capacity_change_month = self.month
+                    workplace.profitable_months = 0
                     workplace.last_decision = f"Expanderade med {increase} arbetsplatser"
                     self.last_business_expansions += 1
 
@@ -712,6 +716,7 @@ class World:
                                max(1, math.ceil(workplace.capacity*.15)))
                 workplace.capacity -= decrease
                 workplace.last_capacity_change_month = self.month
+                workplace.loss_months = 0
                 workplace.last_decision = f"Minskade med {decrease} arbetsplatser efter förluster"
                 self.last_business_contractions += 1
 
@@ -728,8 +733,6 @@ class World:
                     self._record_transaction("Företagsutdelning", dividend,
                                              "Företag", workplace.id,
                                              "Invånare", owner.id, workplace.kind)
-            if not workplace.last_decision:
-                workplace.last_decision = "Behåller kapaciteten och bygger reserv"
 
     def _spawn_new_businesses(self):
         # A village can establish one firm at a time. A city has many independent

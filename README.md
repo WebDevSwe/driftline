@@ -191,8 +191,8 @@ tillräckligt överskott.
 
 Tält finns kvar som kostnadsfritt reservboende. Hotell är en privat verksamhet
 som uppstår när inflyttning och tillfälligt boendebehov motiverar den. Varje
-hotellblock har 12 platser och gästen betalar `10 SM` per månad till
-hotellföretaget. Nya invånare använder en ledig hotellplats direkt och kan
+hotellblock har 12 platser och grundpriset är `10 SM` per månad, men den lokala
+marknaden kan flytta priset. Betalningen går till hotellföretaget. Nya invånare använder en ledig hotellplats direkt och kan
 senare flytta till permanent bostad.
 
 ### Företag och arbete
@@ -201,6 +201,20 @@ Varje verksamhet får en efterfrågesignal. Potentiella ägare jämför verksamh
 med en poäng baserad på efterfrågan, förväntad intäkt, kapital och personlig
 preferens. Högst rimlig poäng vinner; slump används endast för små variationer
 som placering och individuella egenskaper.
+
+Signalen för att starta ännu ett företag är skild från kundunderlaget för ett
+redan existerande företag. En industri förlorar därför inte automatiskt all
+efterfrågan bara för att samhället redan har fått sin första industri.
+Verksamheterna följer intäkt, lönesumma, månadsresultat, sammanlagt resultat
+och ett reservmål baserat på den aktuella lönenivån.
+
+Tre lönsamma månader kan följas av en investering i fler arbetsplatser och vid
+behov ett nytt block. Sex förlustmånader kan leda till en gradvis neddragning;
+en långvarigt tom eller insolvent verksamhet kan slutligen avvecklas. Jordbruk
+hålls kvar längre eftersom matförsörjningen är samhällskritisk. Livskraftiga
+privata företag kan låna till en tillfällig lönebrist, och kapital utöver dubbla
+företagsreserven kan delas ut till ägaren. Därmed ger företagande personlig
+avkastning utan att ägaren tömmer rörelsen på dess lönebuffert.
 
 Jobb är avståndsberoende. Invånaren väljer det billigaste transportsätt som når
 arbetet: gång når 5 block gratis, cykel 18 block (`35 SM` att köpa och `1 SM`
@@ -227,8 +241,8 @@ de för tillfället starkaste platserna. Centrum kan därmed växa, flytta eller
 försvagas när verksamheter förändras.
 
 Kartblock kan klickas för att visa adress, byggnadstyp, ägare, centralitet,
-boendekapacitet, verksamhetens kassa och resultat, anställda samt vilka som bor
-på adressen.
+boendekapacitet, verksamhetens kassa, reserv, intäkt, löner, resultat, senaste
+affärsbeslut, anställda samt vilka som bor på adressen.
 
 Kartan och detaljvyerna använder pixelsprites från projektets `UX`-mapp. Ett
 klick på ett block öppnar en kvartersvy med en stor byggnadsbild, verksamhetens

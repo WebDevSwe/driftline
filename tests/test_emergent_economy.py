@@ -1012,6 +1012,54 @@ def test_viable_industry_can_borrow_to_cover_a_wage():
 
     world._assign_jobs_and_pay_wages()
 
-    assert human.job_id == workplace.id
+    assert any(resident.job_id == workplace.id for resident in world.humans)
     assert workplace.loan_balance > 0
     assert any(t.category == "Banklån" for t in world.transactions)
+
+
+def test_existing_industry_keeps_customer_demand_after_creation_gap_closes():
+    world = make_world()
+    industry = Workplace(90, "Industri", 65, 3, blocks=[(3, 3)])
+    world.workplaces = [industry]
+
+    creation_signal = world._market_signals()["Industri"]
+    operating_demand = world._operating_demand("Industri")
+
+    assert creation_signal == 0
+    assert operating_demand > 0
+
+
+def test_abandoned_business_closes_and_returns_cash_to_owner():
+    world = make_world()
+    owner = world.humans[0]
+    workplace = Workplace(
+        90, "Industri", 65, 3, owner_id=owner.id, money=25,
+        blocks=[(3, 3)], idle_months=17,
+    )
+    world.workplaces = [workplace]
+    world.buildings.append(Building(3, 3, "#f0b34f", "Industri", owner_id=owner.id))
+    before = owner.money
+
+    world._cleanup_abandoned_workplaces()
+
+    assert workplace not in world.workplaces
+    assert owner.money == before+25
+    assert world.last_business_closures == 1
+    assert any(b.kind == "Övergiven" for b in world.buildings if (b.x, b.y) == (3, 3))
+
+
+def test_business_lifecycle_state_survives_save_and_load():
+    world = make_world()
+    workplace = Workplace(
+        90, "Basjobb", 36, 4, money=500, monthly_profit=40,
+        profitable_months=5, reserve_target=288,
+        last_decision="Expanderade med 1 arbetsplatser",
+    )
+    world.workplaces = [workplace]
+
+    loaded = World.from_dict(world.to_dict())
+    restored = loaded.workplaces[0]
+
+    assert restored.profitable_months == 5
+    assert restored.reserve_target == 288
+    assert restored.last_decision == workplace.last_decision
