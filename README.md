@@ -1,163 +1,182 @@
-# driftline
-A small simulation of a society's economy with a grid-based world and a simple policy/budget UI.
+# DriftLine
 
-## Run
-```bash
-pip install customtkinter
+DriftLine är en lokal samhälls- och ekonomisimulator där en liten handelsplats
+växer genom invånarnas behov och den lokala ekonomins efterfrågan.
+
+## Köra programmet
+
+```powershell
+python -m pip install -e .
 python main.py
 ```
 
-## Project Structure
-- `main.py` – entrypoint
-- `ui.py` – UI (CustomTkinter)
-- `world.py` – simulation logic
-- `models.py` – dataclasses
-- `tests/` – pytest tests
+Testerna körs med:
 
-## Core Concepts
-### Time
-- 1 tick = 1 month
-- 12 months = 1 year
-- Tax revenue is collected once per year (month 12)
-- New worlds start in pause mode
-
-### World & Regions
-- Grid size from `Liten/Medium/Stor`
-- Regions: `Norra`, `Medel`, `Syd`
-- Seasons affect expenses
-- Norra: higher winter/seasonal costs + winter stability penalty
-- Medel: moderate seasonal effects
-- Syd: mild seasonal effects
-
-### Money & Budget (Player/State)
-- State budget only covers `Basutgifter`, `Service`, `Säsong`
-- Citizens and companies pay their own food and housing costs
-- Budget window shows last completed year’s income/expenses and latest monthly costs
-- Budget sliders
-- `Basutgifter`, `Service`, `Säsong` (0–100%)
-- Tax rate (0–70%)
-- Service funding per service (0–100%)
-- Block cost slider (min 1)
-
-### Taxes
-- Tax collected once per year, based on employed population
-- Very high tax (>50%) reduces stability
-
-## Population
-- Population changes each tick based on stability, money, season, hunger, unemployment, and health
-- New arrivals start with 0.5–3 months of wages as initial capital
-- There is no auto-job creation; jobs come from citizen-owned workplaces
-
-## Drives
-- Citizens have a drive that shapes behavior
-- `företagare` start businesses more often
-- `lantbruk` prioritizes farming
-- `tältliv` stays in tents longer
-- `status` buys status items more often
-- `risk` more willing to start businesses
-- `sparsam` spends less on status items
-
-## Blocks & Ownership
-- The state sells unused blocks
-- Abandoned blocks become gray and return to the state
-- Abandoned blocks can be restored for a fixed restoration cost
-- Tents use blocks at no cost and are freed when no longer needed
-- Blocks used for housing or workplaces must be purchased
-- Block cost is never below 1 and can be adjusted in the budget window
-- New buildings try to form contiguous rectangles before falling back to scattered blocks
-
-## Housing
-- Citizens start in tents and can buy housing blocks to upgrade to `Hydda`
-- Housing can be shared; tenants pay rent (6 SM per month) to owners
-- If a tent is taken over by construction, that citizen becomes homeless
-- Tents can host up to 4 people and do not allow rent
-- Citizens with money avoid tents when possible
-- Homeless citizens lose all status items after 12 months
-- Homeless citizens can re-enter tents over time
-- In winter, tent dwellers try to move indoors or become homeless
-
-## Workplaces & Jobs
-- Workplaces are created by citizens, not auto-generated
-- Owners can run multiple businesses
-- Jobs pay 20–1000 SM per month, scaled by job type and status items
-- Owners also earn a business share of wages (profit)
-- If a workplace cannot pay everyone, remaining employees become unemployed
-- Workplaces expand to adjacent free or abandoned blocks if they can afford it
-
-### Workplace Types
-- `Jordbruk`
-- 2x2 blocks
-- Must be placed adjacent to a tent or housing
-- 0 block cost, but abandoned blocks still cost restoration
-- Up to 10 workers (including owner)
-- Produces food (16 per employee per month)
-- Abandoned if an industry is within 4 blocks
-- `Mataffär`
-- 1–2 blocks, citizen-owned
-- Buys food for 0.5 SM (or from external market if farms are empty)
-- Sells food for 2 SM
-- `Basjobb`
-- 1–2 blocks
-- Requires at least 1 status item
-- `Service`
-- 2–6 blocks
-- Requires at least 2 status items
-- `Industri`
-- 4, 6, 8, or 16 blocks
-- Requires at least 10 status items
-
-## Bank & Loans
-- One bank holds all unused money
-- Base interest is low at high stability and higher at low stability
-- Deposits earn annual interest
-- Loans charge double the base rate
-- Status items reduce loan interest by 0.01% per item
-- Bank lends at most 50% of total deposits
-- Individuals can borrow up to 10x their bank balance
-- Unpaid loans reduce health; after 3 years in default, bankruptcy occurs
-- If a citizen hits 0 money, they sell owned housing at half value, lose jobs, and move to tent/homeless depending on season
-
-## Food
-- Citizens store up to 100 food
-- They consume 2 food per month
-- When food is below 30 they try to buy more
-- If food hits 0 they become hungry and health drops
-- Food is bought directly from farms first, then from stores
-- The state can provide 10 food to starving, sick citizens
-
-## Status Items
-- Available only when living in housing better than a tent
-- Cost 10 SM each
-- Reduce energy loss and improve health
-- Lost after 12 months of homelessness
-- Money spent on status items leaves the economy
-
-## Services
-- Polis, Brandkår, Sjukvård, Skola, Barnomsorg, A-kassa
-- Active services add costs
-- Polis, Sjukvård, Skola improve stability
-- High funding for Polis/Brandkår adds stability
-
-## Stability
-- Stability rises/falls based on tax levels, region winter penalties, service coverage, unemployment, hunger, and sickness
-
-## UI & Visualization
-- Torg is red in the center
-- Tents are green circles
-- Housing is blue blocks
-- Basjobb is light blue blocks
-- Service is yellow blocks
-- Industry is orange blocks
-- Mataffär is teal blocks
-- Farms are brown dotted blocks
-- Abandoned blocks are gray
-- Food bar shows percent not hungry
-- Status bar shows money, population, employment, unemployment, sick, stability, bank rate, and tax timing
-
-## Save/Load
-- JSON save/load from menu
-
-## Tests
-```bash
+```powershell
+python -m pip install -e ".[test]"
 pytest
 ```
+
+Projektet kräver Python 3.12 eller senare.
+
+## Simuleringsmodell
+
+Världen börjar med tio invånare, ett torg, tält och inga företag. Varje månad
+räknar motorn fram konkreta marknadssignaler för mat, arbeten, bostäder, handel,
+service och industri. Företag skapas bara när efterfrågan, förväntad lönsamhet,
+kapital och en möjlig ägare sammanfaller.
+
+Den normala utvecklingen blir därför ungefär:
+
+```text
+matbrist -> jordbruk -> matöverskott -> inflyttning -> bostäder
+         -> handel och service -> specialisering och industri
+```
+
+Det är ingen låst teknikstege. Om förutsättningarna förändras räknas behoven om
+och samhället kan ta en annan väg.
+
+### Invånare och drives
+
+Alla invånare prioriterar samma grundbehov: mat, boende, inkomst, trygghet och
+bekvämlighet. En drive ändrar hur tidigt och på vilket sätt personen försöker
+lösa behovet. Den kan inte göra en invånare likgiltig inför hunger eller
+hemlöshet.
+
+Missnöje byggs upp månad för månad av hunger, arbetslöshet, hemlöshet, låg
+stabilitet, skattetryck och en levnadsekonomi som inte går ihop. Långvarig
+arbetslöshet eller ekonomisk stress kan därför leda till utflyttning. Inflyttning kräver i
+stället matförsörjning och trovärdiga möjligheter till jobb eller bostad.
+
+Invånarfönstret visar yrke eller arbetslöshet, lön, faktisk hemadress,
+arbetsadress och pendlingsavstånd. En person kan nålas fast med knappen
+`Nåla fast`; då ligger personen kvar överst och månadsvärden för ekonomi,
+mat, hälsa, arbete och boende sparas med världen.
+
+Världen visar också ett dragningskraftsvärde och uppskattad kriminalitet.
+Dragningskraften ökar av låg skatt, stabilitet, lediga bostadsplatser och jobb.
+Kombinationen bostad och jobb kan ge flera inflyttare samma månad. Hunger,
+arbetslöshet, hemlöshet, kriminalitet och servicebrist sänker värdet. Lokal
+matkapacitet begränsar hur stor en inflyttningsvåg kan bli, så snabb tillväxt
+inte omedelbart skapar en artificiell svältspiral.
+
+Invånare avsätter åtta procent av lönen till ett personligt pensionskapital hos
+centralbanken. Vid 67 års ålder lämnar de arbetsmarknaden och får månatlig
+pension så länge kapitalet och bankens reserv räcker. Dödsrisken börjar stiga
+vid hög ålder och dödsfall samt pensionärer visas i statistiken. Egendom går
+vidare till en annan vuxen invånare så att företag och bostäder inte försvinner
+ur ekonomin utan förklaring. Centralbanken finansierar även lån, tar emot ränta
+och redovisar reserv, pensionskapital, utlåning och styrränta.
+
+### Mat
+
+Mat skapas endast av bemannade jordbruk. Ett underskott mot befolkningens behov
+plus säkerhetsmarginal gör jordbruk mycket attraktivt. Det finns inga importer
+som fyller butikslager när lokal produktion saknas.
+
+Matbehovet bedöms från verklig bemanning, inte bara åkermarkens teoretiska
+kapacitet. Personer med `lantbruk` som drive reagerar särskilt starkt på behovet
+och anställda behåller normalt sitt jordbruksyrke mellan månader. Osåld skörd
+lagras på gårdarna i upp till tre månaders produktionskapacitet. Nya gårdar
+läggs som sammanhängande 2×2-fält långt från det aktuella centrumet.
+
+### A-kassa
+
+A-kassa aktiveras när dess servicebudget höjs över noll. Vid 100 procent
+motsvarar ersättningen baslönen `36 SM` per
+arbetslös och månad. Pengarna överförs från kommunens kassa till invånaren och
+visas separat som `A-kassa till invånare` i budgetfönstret. Om kommunen inte har
+råd sänks utbetalningen för alla; systemet skapar inte längre nya pengar.
+Ersättningen betalas före månadens mat- och boendeköp så att den kan stimulera
+jordbruk, handel, hyresvärdar och hotell.
+
+### Kommunens budget
+
+Budgetfönstret skiljer på pengar i kassan, avslutat årsutfall och en prognos för
+de kommande tolv månaderna. Prognosen använder dagens befolkning, löneunderlag,
+arbetslöshet och servicenivå och visar beräknade intäkter, drift, A-kassa,
+årsresultat, kassans uthållighet och skattesatsen som ungefär ger nollresultat.
+Varje service visar aktiveringsstatus, finansieringsnivå samt kostnad per månad
+och år. Kommunala bygginvesteringar och privata bygg-/markintäkter redovisas
+separat i månaden de uppstår.
+
+Finansierad service skapar riktiga kommunala arbetsplatser i relation till
+befolkningen: ungefär en tjänst per 20 invånare i skolan, 18 i barnomsorgen, 30
+i sjukvården, 80 i polisen, 100 i brandkåren och 120 i A-kasseadministrationen
+vid full finansiering. Kommunen betalar lönerna och redovisar dem separat. Om
+kassan inte räcker förblir en del av tjänsterna vakanta.
+
+Skatten tas fortfarande upp årsvis, men skatteunderlaget omfattar nu tolv
+månaders lön i stället för en enda månad. Prognosen inkluderar full utlovad
+A-kassa men inte okända framtida byggprojekt.
+
+### Bostäder
+
+Tält är tillfälliga och ger framför allt vintertid sämre energi och hälsa.
+Privata småhus uppstår aldrig utan en byggherre: en namngiven invånare måste ha
+bostadsambition, betala byggkostnaden och behålla en ekonomisk buffert. Ett nytt
+hus rymmer ägaren och upp till fyra hyresgäster. Med minst 18 månader mellan
+investeringarna kan ägaren utveckla boendet genom `Hydda → Stuga → Villa →
+Stort hus`; varje steg kostar pengar och skapar två nya platser. En
+jordbruksägares hem redovisas som `Gård`. Driftkostnaden stiger från `1 SM` för
+hydda till `10 SM` för stort hus (`5 SM` för gård). Bostaden kan därför fortsätta
+utvecklas även när samhället redan har tillräckligt med boendeplatser.
+
+När samhället blivit större kan kommunen bygga centrala flerfamiljshus med 24
+lägenhetsplatser. Kommunen betalar byggkostnaden och får hyran. Byggnaderna kan
+konverteras till exempelvis skola eller sjukvård när bostadskapaciteten har ett
+tillräckligt överskott.
+
+Tält finns kvar som kostnadsfritt reservboende. Hotell är en privat verksamhet
+som uppstår när inflyttning och tillfälligt boendebehov motiverar den. Varje
+hotellblock har 12 platser och gästen betalar `10 SM` per månad till
+hotellföretaget. Nya invånare använder en ledig hotellplats direkt och kan
+senare flytta till permanent bostad.
+
+### Företag och arbete
+
+Varje verksamhet får en efterfrågesignal. Potentiella ägare jämför verksamheter
+med en poäng baserad på efterfrågan, förväntad intäkt, kapital och personlig
+preferens. Högst rimlig poäng vinner; slump används endast för små variationer
+som placering och individuella egenskaper.
+
+Jobb är avståndsberoende. Invånaren väljer det billigaste transportsätt som når
+arbetet: gång når 9 block gratis, cykel 20 block (`35 SM` att köpa och `1 SM`
+per månad), buss 38 block (`5 SM` per månad) och bil 65 block (`220 SM` att
+köpa och `16 SM` per månad). Det gör bilen till ett dyrt val för verkligt långa
+resor i stället för en allmän statuspryl. Jordbruk har tillgång till arbete på
+plats.
+
+### Dynamiskt centrum
+
+Torget ger startområdet en liten fördel men är inte ett permanent centrum.
+Varje aktivt block får ett centralitetsvärde av sin egen aktivitet och närheten
+till handel, service, arbetsplatser och bostäder. `World.central_blocks()` visar
+de för tillfället starkaste platserna. Centrum kan därmed växa, flytta eller
+försvagas när verksamheter förändras.
+
+Kartblock kan klickas för att visa adress, byggnadstyp, ägare, centralitet,
+boendekapacitet, verksamhetens kassa och resultat, anställda samt vilka som bor
+på adressen.
+
+Aktiverad samhällsservice får nu också en fysisk byggnad: polisstation,
+brandkår, sjukvård, skola, barnomsorg eller A-kassa. Servicebyggnader och
+befolkning skapar fler centrumblock omkring den starkaste lokala kärnan. Alla
+dessa investeringar belastar kommunens kassa; de är inte kostnadsfria kartfält.
+
+Byggbar yta går nu fram till en blocks marginal i stället för att lämna tre
+oförklarligt tomma rader och kolumner. Nya bostäder söker sig mot befintliga
+bostadskvarter och bort från industri. Industrier söker sig på motsvarande sätt
+till andra industrier och bort från bostäder och gårdar; etablering nära sådana
+känsliga grannar får dessutom en mark- och skyddskostnad.
+
+## Kodstruktur
+
+- `main.py` startar skrivbordsprogrammet.
+- `ui.py` innehåller CustomTkinter-gränssnittet.
+- `models.py` innehåller sparbara datamodeller.
+- `world.py` innehåller behov, efterfrågan och månadsflödet.
+- `tests/` verifierar grundregler, stabilitet och prestanda.
+
+Sparfiler är fortsatt vanliga dictionaries/JSON-data. Nya fält har standardvärden
+så att äldre invånare, byggnader och arbetsplatser kan läsas in.

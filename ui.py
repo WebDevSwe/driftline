@@ -6,7 +6,16 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from models import WorldConfig
-from world import World, SIZE_MAP, REGIONS
+from world import (
+    APARTMENT_RENT,
+    HOME_RUNNING_COSTS,
+    HOTEL_RENT,
+    REGIONS,
+    RENT_COST,
+    SIZE_MAP,
+    TRANSPORT_MODES,
+    World,
+)
 
 WINDOW_SIZE = 900
 GRID_PADDING = 16
@@ -61,15 +70,19 @@ class App(ctk.CTk):
 
         self.canvas = tk.Canvas(self, bg="#0f1115", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Button-1>", self._inspect_map_block)
 
         self.stats_window = None
         self.stats_metric = tk.StringVar(value="Invånare")
         self.stats_per_year = tk.BooleanVar(value=False)
+        self.stats_overview = None
         self.budget_window = None
+        self.budget_service_overview = None
         self._updating_budget = False
         self.citizens_window = None
         self.citizens_frame = None
         self.citizen_detail = None
+        self.pin_button = None
         self.selected_human_id = None
         self.citizens_page = 0
         self._citizens_tick_counter = 0
@@ -180,7 +193,8 @@ class App(ctk.CTk):
         self._update_stats_window()
         self._update_budget_window()
         self._citizens_tick_counter += 1
-        if self._citizens_tick_counter >= 24:
+        has_pinned = any(h.pinned for h in self.world.humans)
+        if has_pinned or self._citizens_tick_counter >= 24:
             self._citizens_tick_counter = 0
             self._update_citizens_window()
         tick_ms = max(200, int(BASE_TICK_MS / self.speed_multiplier))
@@ -203,6 +217,9 @@ class App(ctk.CTk):
             f"Arbetslösa: {self.world.unemployed} | "
             f"Sjuka: {self.world.last_sick} | "
             f"Stabilitet: {self.world.stability} | "
+            f"Dragningskraft: {self.world.attractiveness:.0f} | "
+            f"Kriminalitet: {self.world.crime_rate:.0f} | "
+            f"Flytt: +{self.world.last_arrivals}/-{self.world.last_departures} | "
             f"Bankränta: {self.world.last_bank_rate:.2%} | "
             f"Skatt: {'NU' if tax_month else 'senare'} | "
             f"Tid: {self.world.formatted_time()}"
@@ -286,6 +303,7 @@ class App(ctk.CTk):
         def apply_services():
             for name, var in vars_map.items():
                 self.world.services[name] = bool(var.get())
+            self._update_budget_window()
             dialog.destroy()
 
         ctk.CTkButton(dialog, text="Spara", command=apply_services).pack(padx=16, pady=16)
@@ -296,10 +314,12 @@ class App(ctk.CTk):
             return
         if self.stats_window and self.stats_window.winfo_exists():
             self.stats_window.lift()
+            self._update_stats_window()
             return
         window = ctk.CTkToplevel(self)
         window.title("Statistik")
-        window.geometry("520x380")
+        window.geometry("880x700")
+        window.minsize(720, 580)
         window.transient(self)
         self.stats_window = window
 
@@ -310,7 +330,15 @@ class App(ctk.CTk):
         metric_menu = ctk.CTkOptionMenu(
             top,
             variable=self.stats_metric,
-            values=["Invånare", "Pengar", "Utgifter", "Byggnader", "Total ekonomi"],
+            values=[
+                "Invånare", "Inflyttade", "Utflyttade", "Sysselsatta", "Arbetslösa",
+                "Hungriga", "Sjuka", "Mat tillgänglig", "Matlager", "Bostadskapacitet",
+                "Boende i bostad", "Arbetsplatser", "Jordbruk", "Byggnader",
+                "Hotellgäster", "Hotellplatser", "Cyklar", "Bussresenärer", "Bilar",
+                "Pensionärer", "Dödsfall", "Pensionskapital",
+                "Centrumyta", "Dragningskraft", "Kriminalitet", "Kommunens pengar",
+                "Utgifter", "A-kassa", "Total ekonomi",
+            ],
             command=lambda _value: self._update_stats_window(),
             width=160,
         )
@@ -326,8 +354,12 @@ class App(ctk.CTk):
         self.stats_label = ctk.CTkLabel(window, text="")
         self.stats_label.pack(anchor="w", padx=16, pady=(0, 8))
 
-        self.stats_canvas = tk.Canvas(window, bg="#0f1115", height=220, highlightthickness=0)
-        self.stats_canvas.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
+        self.stats_canvas = tk.Canvas(window, bg="#0f1115", height=240, highlightthickness=0)
+        self.stats_canvas.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
+
+        self.stats_overview = ctk.CTkTextbox(window, height=250, font=("Consolas", 12))
+        self.stats_overview.pack(fill=tk.X, padx=16, pady=(0, 16))
+        self.stats_overview.configure(state="disabled")
 
         self._update_stats_window()
 
@@ -341,7 +373,7 @@ class App(ctk.CTk):
             return
         window = ctk.CTkToplevel(self)
         window.title("Invånare")
-        window.geometry("620x480")
+        window.geometry("780x560")
         window.transient(self)
         self.citizens_window = window
 
@@ -352,8 +384,12 @@ class App(ctk.CTk):
 
         self.citizens_frame = ctk.CTkScrollableFrame(layout, fg_color="transparent")
         self.citizens_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self.citizen_detail = ctk.CTkLabel(layout, text="", anchor="w", justify="left")
-        self.citizen_detail.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        detail_frame = ctk.CTkFrame(layout, fg_color="transparent")
+        detail_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.citizen_detail = ctk.CTkLabel(detail_frame, text="", anchor="w", justify="left")
+        self.citizen_detail.pack(fill=tk.BOTH, expand=True, anchor="nw")
+        self.pin_button = ctk.CTkButton(detail_frame, text="Nåla fast", command=self._toggle_pin_selected)
+        self.pin_button.pack(fill=tk.X, pady=(8, 0))
 
         controls = ctk.CTkFrame(window, fg_color="transparent")
         controls.pack(fill=tk.X, padx=16, pady=(0, 12))
@@ -370,6 +406,21 @@ class App(ctk.CTk):
 
     def _select_citizen(self, human_id):
         self.selected_human_id = human_id
+        self._update_citizens_window()
+
+    def _toggle_pin_selected(self):
+        if not self.world or self.selected_human_id is None: return
+        human = next((h for h in self.world.humans if h.id == self.selected_human_id), None)
+        if human is None: return
+        human.pinned = not human.pinned
+        if human.pinned and not human.personal_history:
+            workplace = next((w for w in self.world.workplaces if w.id == human.job_id), None)
+            human.personal_history.append({
+                "month": self.world.month, "money": human.money, "food": human.food,
+                "health": human.health, "energy": human.energy,
+                "job": workplace.kind if workplace else None,
+                "home": human.home_kind, "hungry": human.hungry,
+            })
         self._update_citizens_window()
 
     def _prev_citizens_page(self):
@@ -397,7 +448,9 @@ class App(ctk.CTk):
         selected = None
         start = self.citizens_page * 10
         end = start + 10
-        for h in self.world.humans[start:end]:
+        pinned = [h for h in self.world.humans if h.pinned]
+        page = [h for h in self.world.humans[start:end] if not h.pinned]
+        for h in pinned + page:
             row = ctk.CTkFrame(self.citizens_frame, fg_color="transparent")
             row.pack(fill=tk.X, pady=2)
 
@@ -408,14 +461,17 @@ class App(ctk.CTk):
 
             name_btn = ctk.CTkButton(
                 row,
-                text=h.name,
+                text=f"★ {h.name}" if h.pinned else h.name,
                 width=140,
                 command=lambda hid=h.id: self._select_citizen(hid),
             )
             name_btn.pack(side=tk.LEFT, padx=(0, 6))
 
             status = "Sjuk" if h.sick else "Hungrig" if h.hungry else "Ok"
-            ctk.CTkLabel(row, text=f"{status} | {h.money} SM").pack(side=tk.LEFT)
+            row_job = next((w for w in self.world.workplaces if w.id == h.job_id), None)
+            ctk.CTkLabel(
+                row, text=f"{status} | {(row_job.service_name or row_job.kind) if row_job else ('Pensionär' if h.retired else 'Arbetslös')} | {h.money} SM"
+            ).pack(side=tk.LEFT)
 
             if self.selected_human_id == h.id:
                 selected = h
@@ -425,39 +481,79 @@ class App(ctk.CTk):
             self.selected_human_id = selected.id
 
         if selected:
-            owned_housing = sum(1 for b in self.world.buildings if b.kind == "Bostad" and b.owner_id == selected.id)
+            workplace = next((w for w in self.world.workplaces if w.id == selected.job_id), None)
+            job_status = ((workplace.service_name or workplace.kind) if workplace else
+                          ("Pensionär" if selected.retired else "Arbetslös"))
+            wage = self.world._wage_for(selected, workplace) if workplace else 0
+            if workplace and workplace.blocks and selected.home_x is not None:
+                commute = min(abs(selected.home_x-x)+abs(selected.home_y-y) for x, y in workplace.blocks)
+            else:
+                commute = None
+            address = (f"Block ({selected.home_x}, {selected.home_y})"
+                       if selected.home_x is not None else "Ingen fast adress")
+            owned_housing = sum(
+                1 for b in self.world.buildings
+                if b.active and b.kind == "Bostad" and b.owner_id == selected.id
+            )
+            owned_housing_capacity = sum(
+                self.world._private_home_capacity(b) for b in self.world.buildings
+                if b.active and b.kind == "Bostad" and b.owner_id == selected.id
+            )
             owned_businesses = sum(1 for w in self.world.workplaces if w.owner_id == selected.id)
             employees = sum(w.employed for w in self.world.workplaces if w.owner_id == selected.id)
             tenants = sum(
                 1
                 for h in self.world.humans
-                if h.home_kind == "Bostad" and h.home_owner_id == selected.id and h.id != selected.id
+                if h.home_owner_id == selected.id and h.id != selected.id
             )
             renting = (
-                selected.home_kind == "Bostad"
+                selected.home_kind not in ("Tält", "Bostadslös")
                 and selected.home_owner_id is not None
                 and selected.home_owner_id != selected.id
             )
-            detail = (
-                f"Namn: {selected.name}\n"
-                f"Ålder: {selected.age}\n"
-                f"Pengar: {selected.money} SM\n"
-                f"Mat: {selected.food}\n"
-                f"Energi: {selected.energy}\n"
-                f"Hälsa: {selected.health}\n"
-                f"Sjuk: {'Ja' if selected.sick else 'Nej'}\n"
-                f"Hungrig: {'Ja' if selected.hungry else 'Nej'}\n"
-                f"Statusprylar: {selected.status_items}\n"
-                f"Lån: {selected.loan_balance}\n"
-                f"Boende: {selected.home_kind}\n"
-                f"Hyr: {'Ja' if renting else 'Nej'}\n"
-                f"Ägda bostäder: {owned_housing}\n"
-                f"Ägda företag: {owned_businesses}\n"
-                f"Anställda: {employees}\n"
-                f"Hyresgäster: {tenants}\n"
-                f"Jobb ID: {selected.job_id if selected.job_id is not None else '-'}\n"
-            )
+            lines = [f"Namn: {selected.name}", f"Ålder: {selected.age}",
+                     f"Pengar: {selected.money} SM", f"Mat: {selected.food}",
+                     f"Energi: {selected.energy}", f"Hälsa: {selected.health}"]
+            if selected.sick: lines.append("Status: Sjuk")
+            if selected.hungry: lines.append("Status: Hungrig")
+            if selected.retired: lines.append("Status: Pensionär")
+            if selected.loan_balance: lines.append(f"Lån: {selected.loan_balance} SM")
+            if selected.pension_balance: lines.append(f"Pensionskapital: {selected.pension_balance} SM")
+            if selected.status_items: lines.append(f"Statusprylar: {selected.status_items}")
+            lines += ["", f"Boende: {selected.home_kind}", f"Adress: {address}"]
+            if selected.home_owner_id == selected.id and selected.home_kind in HOME_RUNNING_COSTS:
+                lines.append(f"Boendedrift: {HOME_RUNNING_COSTS[selected.home_kind]} SM/mån")
+            if renting:
+                rent = HOTEL_RENT if selected.home_kind == "Hotell" else (
+                    APARTMENT_RENT if selected.home_kind == "Lägenhet" else RENT_COST
+                )
+                lines.append(f"Hyra: {rent} SM/mån")
+            if owned_housing:
+                lines += [f"Ägda bostäder: {owned_housing}",
+                          f"Platser i egna hus: {owned_housing_capacity}"]
+            if tenants: lines.append(f"Hyresgäster nu: {tenants}")
+            if owned_businesses:
+                lines += [f"Ägda företag: {owned_businesses}", f"Anställda: {employees}"]
+            lines += ["", f"Arbete: {job_status}"]
+            if workplace:
+                lines += [f"Lön: {wage} SM/mån", f"Arbetsplats-ID: {selected.job_id}",
+                          f"Arbetsadress: Block {workplace.blocks[0] if workplace.blocks else '-'}",
+                          f"Resväg: {commute if commute is not None else '-'} block"]
+            mode = self.world._transport_mode(selected)
+            lines.append(f"Transportsätt: {mode} ({TRANSPORT_MODES[mode]['monthly']} SM/mån)")
+            if selected.leisure_items: lines.append(f"Fritidsköp: {selected.leisure_items}")
+            detail = "\n".join(lines)+"\n"
+            if selected.personal_history:
+                first = selected.personal_history[0]
+                detail += (
+                    f"\nFöljs sedan månad {first['month']} ({len(selected.personal_history)} mätpunkter)\n"
+                    f"Pengar: {first['money']} → {selected.money} SM\n"
+                    f"Hälsa: {first['health']} → {selected.health}\n"
+                    f"Mat: {first['food']} → {selected.food}\n"
+                )
             self.citizen_detail.configure(text=detail)
+            if self.pin_button:
+                self.pin_button.configure(text="Ta bort nål" if selected.pinned else "Nåla fast")
 
     def _update_stats_window(self):
         if not self.world or not self.stats_window or not self.stats_window.winfo_exists():
@@ -465,33 +561,108 @@ class App(ctk.CTk):
         metric = self.stats_metric.get()
         key_map = {
             "Invånare": "population",
-            "Pengar": "money",
+            "Inflyttade": "arrivals", "Utflyttade": "departures",
+            "Sysselsatta": "employed", "Arbetslösa": "unemployed",
+            "Hungriga": "hungry", "Sjuka": "sick",
+            "Mat tillgänglig": "food_supply", "Matlager": "food_stored",
+            "Bostadskapacitet": "housing_capacity", "Boende i bostad": "housed",
+            "Arbetsplatser": "workplaces", "Jordbruk": "farms",
+            "Hotellgäster": "hotel_guests", "Hotellplatser": "hotel_rooms",
+            "Cyklar": "bikes", "Bussresenärer": "bus_users", "Bilar": "cars",
+            "Pensionärer": "retired", "Dödsfall": "deaths", "Pensionskapital": "pension_assets",
+            "Centrumyta": "central_area", "Dragningskraft": "attractiveness",
+            "Kriminalitet": "crime", "Kommunens pengar": "money",
             "Utgifter": "expenses",
+            "A-kassa": "unemployment_support",
             "Byggnader": "buildings",
             "Total ekonomi": "economy",
         }
         key = key_map.get(metric, "population")
         source = self.world.history_year if self.stats_per_year.get() else self.world.history
         data = source.get(key, [])
-        if metric == "Byggnader":
-            current = len(self.world.buildings)
-            if not data:
-                data = [current]
-            elif max(data) == 0 and current > 0:
-                data = [current] * len(data)
-            counts = {}
-            for b in self.world.buildings:
-                counts[b.kind] = counts.get(b.kind, 0) + 1
-            breakdown = " | ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
-            self.stats_label.configure(
-                text=f"{metric}: {current}  |  {breakdown}  |  Tid: {self.world.formatted_time()}"
-            )
-            self._draw_chart(data)
-            return
-        else:
-            current = data[-1] if data else 0
-        self.stats_label.configure(text=f"{metric}: {current}  |  Tid: {self.world.formatted_time()}")
+        if not data:
+            snapshot = self.world.statistics_snapshot()
+            fallback = {
+                "population": self.world.population, "money": self.world.money,
+                "expenses": self.world.expenses, "buildings": snapshot["active_buildings"],
+                "economy": self.world.money-self.world.expenses,
+                "hungry": self.world.last_hungry, "sick": self.world.last_sick,
+                "unemployed": self.world.unemployed, "employed": self.world._employed_count(),
+                "food_supply": self.world.last_food_supply, "food_stored": snapshot["food_stored"],
+                "housing_capacity": snapshot["housing_capacity"], "housed": snapshot["housed"],
+                "workplaces": len(self.world.workplaces), "farms": snapshot["farms"],
+                "attractiveness": self.world.attractiveness, "crime": self.world.crime_rate,
+                "arrivals": self.world.last_arrivals, "departures": self.world.last_departures,
+                "central_area": snapshot["central_area"],
+                "unemployment_support": self.world.last_unemployment_support,
+                "hotel_guests": snapshot["hotel_guests"], "hotel_rooms": snapshot["hotel_rooms"],
+                "cars": snapshot["cars"],
+                "bikes": snapshot["transport_modes"].get("Cykel", 0),
+                "bus_users": snapshot["transport_modes"].get("Buss", 0),
+                "retired": snapshot["retired"], "deaths": self.world.last_deaths,
+                "pension_assets": self.world.central_bank.pension_assets,
+            }
+            data = [fallback.get(key, 0)]
+        current = data[-1] if data else 0
+        self.stats_label.configure(
+            text=f"{metric}: {current}  |  Senaste {len(data)} "
+                 f"{'år' if self.stats_per_year.get() else 'månader'}  |  Tid: {self.world.formatted_time()}"
+        )
         self._draw_chart(data)
+        self._update_stats_overview()
+
+    def _update_stats_overview(self):
+        if not self.world or self.stats_overview is None: return
+        stats = self.world.statistics_snapshot()
+        businesses = "  ".join(
+            f"{kind}: {count} ({stats['employees_by_kind'].get(kind, 0)} anst.)"
+            for kind, count in sorted(stats["workplace_counts"].items())
+        ) or "Inga"
+        buildings = "  ".join(
+            f"{kind}: {count}" for kind, count in sorted(stats["building_counts"].items())
+        ) or "Inga"
+        services = "  ".join(
+            f"{name}: {count}" for name, count in stats["service_buildings"].items() if count
+        ) or "Inga fysiska servicebyggnader"
+        home_types = "  ".join(
+            f"{kind}: {count}" for kind, count in sorted(stats["home_types"].items())
+        )
+        text = (
+            "BEFOLKNING OCH VÄLFÄRD\n"
+            f"Invånare: {self.world.population:<6} Sysselsatta: {self.world._employed_count():<6} "
+            f"Arbetslösa: {self.world.unemployed:<6} Hungriga: {self.world.last_hungry:<6} Sjuka: {self.world.last_sick}\n"
+            f"Flytt denna månad: +{self.world.last_arrivals}/-{self.world.last_departures}    "
+            f"Pensionärer: {stats['retired']}    Dödsfall: {self.world.last_deaths}\n"
+            f"Dragningskraft: {self.world.attractiveness:.0f}    Kriminalitet: {self.world.crime_rate:.0f}\n\n"
+            "MAT OCH ARBETE\n"
+            f"Mat tillgänglig: {self.world.last_food_supply:<7} Mat såld: {self.world.last_food_sold:<7} "
+            f"Mat i gårdslager: {stats['food_stored']}\n"
+            f"Jordbruk: {stats['farms']}    Bönder: {stats['farm_workers']}    Företag: {len(self.world.workplaces)}\n"
+            f"Verksamheter: {businesses}\n\n"
+            "BOSTÄDER OCH CENTRUM\n"
+            f"Boende i bostad: {stats['housed']}/{stats['housing_capacity']}    "
+            f"Lediga platser: {stats['housing_vacancies']}\n"
+            f"Privata hus: {stats['private_houses']}    Utbyggda hus: {stats['expanded_houses']}    "
+            f"Flerfamiljshus: {stats['apartment_buildings']}    Centrumyta: {stats['central_area']}\n"
+            f"Hotellgäster: {stats['hotel_guests']}/{stats['hotel_rooms']}    "
+            f"Transport: gå {stats['transport_modes']['Gå']}, cykel {stats['transport_modes']['Cykel']}, "
+            f"buss {stats['transport_modes']['Buss']}, bil {stats['transport_modes']['Bil']}\n"
+            f"Boendeformer: {home_types}\n"
+            f"Servicebyggnader: {services}\n\n"
+            "EKONOMI OCH SKAPAT INNEHÅLL\n"
+            f"Kommunens pengar: {self.world.money} SM    Utgifter: {self.world.expenses} SM    "
+            f"A-kassa utbetald: {self.world.last_unemployment_support} SM\n"
+            f"Genomsnittliga invånarpengar: {stats['average_money']} SM\n"
+            f"Centralbank: {self.world.central_bank.reserves} SM i reserv, "
+            f"{self.world.central_bank.pension_assets} SM pensionskapital, "
+            f"{self.world.central_bank.outstanding_loans} SM utlånat, "
+            f"ränta {self.world.central_bank.policy_rate*100:.1f}%\n"
+            f"Aktiva byggnader ({stats['active_buildings']}): {buildings}"
+        )
+        self.stats_overview.configure(state="normal")
+        self.stats_overview.delete("1.0", tk.END)
+        self.stats_overview.insert("1.0", text)
+        self.stats_overview.configure(state="disabled")
 
     def _open_budget_window(self):
         if not self.world:
@@ -503,21 +674,33 @@ class App(ctk.CTk):
             return
         window = ctk.CTkToplevel(self)
         window.title("Budget")
-        window.geometry("520x540")
+        window.geometry("760x760")
+        window.minsize(680, 620)
         window.transient(self)
         self.budget_window = window
 
         self.budget_labels = {}
-        header = ctk.CTkLabel(window, text="Budget (per år)", font=ctk.CTkFont(size=16, weight="bold"))
+        header = ctk.CTkLabel(window, text="Kommunens budget och prognos", font=ctk.CTkFont(size=16, weight="bold"))
         header.pack(anchor="w", padx=16, pady=(16, 8))
 
         content = ctk.CTkScrollableFrame(window, fg_color="transparent")
         content.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
 
-        for key in ["Intäkter", "Utgifter", "Basutgifter", "Service", "Säsong", "Netto"]:
+        for key in [
+            "Kassa", "Prognos", "Nollskatt", "Uthållighet", "Intäkter", "Utgifter",
+            "Skatteintäkter", "Markintäkter", "Investeringar", "Basutgifter",
+            "Service", "Kommunala löner", "A-kassa", "Säsong", "Netto",
+        ]:
             label = ctk.CTkLabel(content, text="")
             label.pack(anchor="w", pady=4)
             self.budget_labels[key] = label
+
+        ctk.CTkLabel(
+            content,
+            text="Prognosen använder dagens befolkning, jobb och servicenivå. "
+                 "Full A-kassa ingår; framtida bygginvesteringar går inte att förutsäga.",
+            text_color="#8f9bab", wraplength=680, justify="left",
+        ).pack(anchor="w", pady=(2, 8))
 
         ctk.CTkLabel(content, text="Budget-allokering (%):").pack(anchor="w", pady=(8, 4))
         self.budget_sliders = {}
@@ -587,23 +770,79 @@ class App(ctk.CTk):
             self.service_sliders[name] = (slider, value_label)
             slider.set(self.world.service_funding.get(name, 0))
 
+        ctk.CTkLabel(content, text="Beräknad servicekostnad:").pack(anchor="w", pady=(12, 4))
+        self.budget_service_overview = ctk.CTkLabel(
+            content, text="", anchor="w", justify="left", font=("Consolas", 12)
+        )
+        self.budget_service_overview.pack(fill=tk.X, anchor="w", pady=(0, 8))
+
         self._update_budget_window()
 
     def _update_budget_window(self):
         if not self.world or not self.budget_window or not self.budget_window.winfo_exists():
             return
+        for name, funding in self.world.service_funding.items():
+            if funding > 0: self.world.services[name] = True
         self._updating_budget = True
         revenue = self.world.last_year_revenue
         total_expenses = self.world.last_year_expenses
         breakdown = self.world.last_expenses
         net = revenue - total_expenses
+        forecast = self.world.budget_snapshot()
         year = max(1, (self.world.month // 12))
+        projected = forecast["projected_net"]
+        forecast_color = "#62d890" if projected >= 0 else "#ff7272"
+        self.budget_labels["Kassa"].configure(
+            text=f"Pengar i kassan nu: {forecast['treasury']} SM",
+            text_color="#62d890" if forecast["treasury"] > 0 else "#ff7272",
+        )
+        self.budget_labels["Prognos"].configure(
+            text=f"Prognos nästa 12 månader: {projected:+} SM  "
+                 f"(intäkter {forecast['annual_income']} / drift {forecast['annual_cost']})",
+            text_color=forecast_color,
+        )
+        break_even = forecast["break_even_tax"]
+        break_even_text = "saknar löneunderlag" if break_even is None else f"cirka {break_even:.1%}"
+        self.budget_labels["Nollskatt"].configure(
+            text=f"Skatt för ungefär nollresultat: {break_even_text}"
+        )
+        runway = forecast["runway_months"]
+        runway_text = "kassan växer" if runway is None else f"cirka {runway:.1f} månader"
+        self.budget_labels["Uthållighet"].configure(text=f"Uthållighet med nuvarande prognos: {runway_text}")
         self.budget_labels["Intäkter"].configure(text=f"Intäkter (år {year}): {revenue}")
         self.budget_labels["Utgifter"].configure(text=f"Utgifter totalt (år {year}): {total_expenses}")
+        self.budget_labels["Skatteintäkter"].configure(
+            text=f"Senaste skatteintäkt: {forecast['last_tax_revenue']} SM"
+        )
+        self.budget_labels["Markintäkter"].configure(
+            text=f"Bygg- och markintäkter denna månad: {forecast['last_development_revenue']} SM"
+        )
+        self.budget_labels["Investeringar"].configure(
+            text=f"Kommunala bygginvesteringar denna månad: {breakdown.get('Investeringar', 0)} SM"
+        )
         self.budget_labels["Basutgifter"].configure(text=f"Basutgifter (senaste månad): {breakdown.get('Basutgifter', 0)}")
         self.budget_labels["Service"].configure(text=f"Service (senaste månad): {breakdown.get('Service', 0)}")
+        self.budget_labels["Kommunala löner"].configure(
+            text=f"Kommunala löner (senaste månad): {breakdown.get('Kommunala löner', 0)}"
+        )
+        self.budget_labels["A-kassa"].configure(
+            text=f"A-kassa till invånare (senaste månad): {breakdown.get('A-kassa utbetalningar', 0)}"
+        )
         self.budget_labels["Säsong"].configure(text=f"Säsong (senaste månad): {breakdown.get('Säsong', 0)}")
         self.budget_labels["Netto"].configure(text=f"Netto (år {year}): {net}")
+        if self.budget_service_overview is not None:
+            rows = []
+            for name, item in forecast["service_items"].items():
+                status = "PÅ " if item["enabled"] else "AV "
+                detail = (f"{item['jobs']:>3} jobb  lön {item['payroll']:>5}  "
+                          f"drift {item['administration']:>3}")
+                if item["transfer"]:
+                    detail += f" + stöd {item['transfer']:>5} SM/mån"
+                rows.append(
+                    f"{name:<12} {status} {item['funding']:>3}%   {detail:<34} "
+                    f"{item['monthly']*12:>7} SM/år"
+                )
+            self.budget_service_overview.configure(text="\n".join(rows))
         for name, (slider, value_label) in self.budget_sliders.items():
             value = self.world.budget_allocations.get(name, 100)
             value_label.configure(text=f"{int(value)}%")
@@ -624,6 +863,7 @@ class App(ctk.CTk):
         if self._updating_budget:
             return
         self.world.service_funding[name] = int(value)
+        self.world.services[name] = int(value) > 0
         self._update_budget_window()
 
     def _set_budget_allocation(self, name, value):
@@ -642,6 +882,7 @@ class App(ctk.CTk):
         self.world.tax_rate = int(value) / 100.0
         if hasattr(self, "tax_label"):
             self.tax_label.configure(text=f"{int(value)}%")
+        self._update_budget_window()
 
     def _set_block_cost(self, value):
         if not self.world:
@@ -672,8 +913,53 @@ class App(ctk.CTk):
             x = padding + i * step
             y = height - padding - ((value - min_val) / span) * (height - 2 * padding)
             points.extend([x, y])
-        canvas.create_line(points, fill="#62b1ff", width=2, smooth=True)
         canvas.create_rectangle(padding, padding, width - padding, height - padding, outline="#1f232b")
+        canvas.create_text(padding+4, padding+4, text=f"max {max_val:g}", fill="#8f9bab", anchor="nw")
+        canvas.create_text(padding+4, height-padding-4, text=f"min {min_val:g}", fill="#8f9bab", anchor="sw")
+        if len(values) == 1:
+            x, y = points
+            canvas.create_oval(x-3, y-3, x+3, y+3, fill="#62b1ff", outline="")
+        else:
+            canvas.create_line(points, fill="#62b1ff", width=2, smooth=True)
+
+    def _inspect_map_block(self, event):
+        if not self.world or not hasattr(self, "_grid_geometry"): return
+        start_x, start_y, cell, grid_size = self._grid_geometry
+        x = int((event.x-start_x)//cell)
+        y = int((event.y-start_y)//cell)
+        if not (0 <= x < grid_size and 0 <= y < grid_size): return
+        buildings = [b for b in self.world.buildings if b.active and b.x == x and b.y == y]
+        residents = [h for h in self.world.humans if h.home_x == x and h.home_y == y]
+        workplaces = [w for w in self.world.workplaces if (x, y) in w.blocks]
+        if not buildings and not residents and not workplaces:
+            messagebox.showinfo("Block", f"Block ({x}, {y}) är tomt.")
+            return
+        people = {h.id: h for h in self.world.humans}
+        lines = [f"Adress: block ({x}, {y})"]
+        for building in buildings:
+            owner = people.get(building.owner_id)
+            building_name = (self.world._home_type(building) if building.kind == "Bostad"
+                             else building.kind)
+            lines += ["", f"Byggnad: {building_name}",
+                      f"Ägare: {owner.name if owner else 'Kommunen/ingen'}",
+                      f"Nivå: {building.level}", f"Centralitet: {building.centrality:.1f}"]
+            if building.kind == "Bostad":
+                lines.append(f"Boendekapacitet: {self.world._private_home_capacity(building)}")
+            elif building.kind in ("Flerfamiljshus", "Hotell"):
+                lines.append(f"Boendeplatser: {building.housing_units}")
+        for workplace in workplaces:
+            owner = people.get(workplace.owner_id)
+            activity = workplace.service_name or workplace.kind
+            lines += ["", f"Verksamhet: {activity} (ID {workplace.id})",
+                      f"Företagare: {owner.name if owner else '-'}",
+                      f"Anställda: {workplace.employed}/{workplace.capacity}",
+                      f"Kassa: {workplace.money} SM", f"Senaste resultat: {workplace.monthly_profit} SM"]
+        if residents:
+            lines += ["", f"Boende här ({len(residents)}):"]
+            lines.extend(f"• {h.name} – {'arbetslös' if h.job_id is None else 'jobb ID '+str(h.job_id)}"
+                         for h in residents[:20])
+            if len(residents) > 20: lines.append(f"… och {len(residents)-20} till")
+        messagebox.showinfo("Undersök block", "\n".join(lines))
 
     def _render_world(self):
         self.canvas.delete("all")
@@ -686,6 +972,7 @@ class App(ctk.CTk):
         grid_px = cell * grid_size
         start_x = (self.winfo_width() - grid_px) // 2
         start_y = self.statusbar.winfo_height() + (self.winfo_height() - self.statusbar.winfo_height() - grid_px) // 2
+        self._grid_geometry = (start_x, start_y, cell, grid_size)
 
         for i in range(grid_size + 1):
             x = start_x + i * cell
@@ -738,6 +1025,19 @@ class App(ctk.CTk):
                             fill=dot_color,
                             outline="",
                         )
+            elif building.kind == "Flerfamiljshus":
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="#d8cae8")
+                window_color = "#f3d98b"
+                window_size = max(1, cell // 5)
+                for wx in (x1 + cell * .25, x1 + cell * .65):
+                    for wy in (y1 + cell * .25, y1 + cell * .6):
+                        self.canvas.create_rectangle(
+                            wx, wy, wx + window_size, wy + window_size,
+                            fill=window_color, outline="",
+                        )
+            elif building.kind == "Bostad":
+                width = max(1, min(3, building.level))
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="#c8e4ff", width=width)
             else:
                 self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
 
